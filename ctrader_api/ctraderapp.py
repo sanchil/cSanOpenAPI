@@ -1,8 +1,8 @@
 from collections import defaultdict, deque
-from typing import Deque, Dict, Any
 import pandas as pd
 import time
 from twisted.internet import task
+from datetime import datetime
 
 from .client import CTraderOpenAPI
 from .ctypes import IndData
@@ -14,15 +14,10 @@ class CTraderApp:
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_tick
 
-        # Rolling windows: symbol_id -> deque of dicts (bars)
-        self.rolling_windows: Dict[int, Deque[dict]] = defaultdict(lambda: deque(maxlen=500))
-        
-        # Full history (limited)
-        self.bars: Dict[int, Deque[dict]] = defaultdict(lambda: deque(maxlen=2000))
+        self.ind_data: IndData | None = None
 
-        self.current_bar: Dict[int, dict] = {}
-        self.symbol_map: Dict[int, str] = {}
-
+        self.symbol_map = {}
+        self.current_bar = {}
         self.bar_interval = 60
         self.last_bar_time = None
 
@@ -30,14 +25,62 @@ class CTraderApp:
 
     def on_init(self):
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
-        print("Starting OnBar system...")
-        
-        # Initialize IndData
+        print("Initializing IndData with historical data...")       
+
+        # Load symbol names
+        d = self.api.get_symbols()
+        d.addCallback(self.on_symbols_received)
+
+        self.init_ind_data()
+
+        self.api.subscribe_spots([1, 2, 3, 4, 5, 6])
+
+    def init_ind_data(self):
+        """Populate IndData with historical data"""
         self.ind_data = IndData()
-        
+
+        # Only 2 major pairs + 1 week of data
+        major_pairs = [1, 3]   # EURUSD and USDJPY
+
+        for symbol_id in major_pairs:
+            d = self.api.get_trendbars(
+                symbol_id=symbol_id, 
+                period="M1", 
+                weeks=1,           # Use weeks, not days
+                client_msg_id=f"hist_{symbol_id}"
+            )
+            d.addCallback(self.on_historical_bars_received, symbol_id)
+            d.addErrback(self.on_historical_error, symbol_id)
+            
+            
+    def on_symbols_received(self, response):
         symbols = getattr(response, 'symbol', [])
         for symbol in symbols:
             self.symbol_map[symbol.symbolId] = symbol.symbolName
+        print(f"✅ Loaded {len(self.symbol_map)} symbols")
+
+    def on_historical_bars_received(self, response, symbol_id: int):
+        """Callback when historical bars are received"""
+        bars = getattr(response, 'trendbar', [])
+        
+        # Simple fallback without relying on symbol_map
+        symbol_name = f"ID_{symbol_id}"
+
+        print(f"Loaded {len(bars)} historical bars for {symbol_name}")
+
+        for bar in bars:
+            if self.ind_data:
+                self.ind_data.open.append(getattr(bar, 'open', 0) / 100000)
+                self.ind_data.high.append(getattr(bar, 'high', 0) / 100000)
+                self.ind_data.low.append(getattr(bar, 'low', 0) / 100000)
+                self.ind_data.close.append(getattr(bar, 'close', 0) / 100000)
+                self.ind_data.tick_volume.append(getattr(bar, 'volume', 0) / 100)
+                self.ind_data.time.append(datetime.fromtimestamp(getattr(bar, 'timestamp', 0) / 1000))
+
+ 
+    def on_historical_error(self, failure, symbol_id: int):
+        """Handle errors when loading historical data"""
+        print(f"❌ Failed to load historical data for symbol {symbol_id}: {failure}")
 
     def on_tick(self, message):
         if not hasattr(message, 'symbolId') or not hasattr(message, 'bid'):
@@ -45,23 +88,19 @@ class CTraderApp:
 
         symbol_id = message.symbolId
         price = (message.bid + message.ask) / 2
-        bid = message.bid
-        ask = message.ask
         volume = getattr(message, 'volume', 0)
         timestamp = time.time()
 
-        self.update_current_bar(symbol_id, price, bid, ask, volume, timestamp)
+        self.update_current_bar(symbol_id, price, volume, timestamp)
         self.check_for_new_bar(timestamp)
 
-    def update_current_bar(self, symbol_id: int, price: float, bid: float, ask: float, volume: int, timestamp: float):
+    def update_current_bar(self, symbol_id: int, price: float, volume: int, timestamp: float):
         if symbol_id not in self.current_bar:
             self.current_bar[symbol_id] = {
                 'open': price,
                 'high': price,
                 'low': price,
                 'close': price,
-                'bid': bid,
-                'ask': ask,
                 'volume': volume,
                 'timestamp': timestamp
             }
@@ -71,8 +110,6 @@ class CTraderApp:
         bar['high'] = max(bar['high'], price)
         bar['low'] = min(bar['low'], price)
         bar['close'] = price
-        bar['bid'] = bid
-        bar['ask'] = ask
         bar['volume'] += volume
         bar['timestamp'] = timestamp
 
@@ -91,9 +128,14 @@ class CTraderApp:
         """Called when a new bar is completed"""
         for symbol_id, bar in list(self.current_bar.items()):
             completed_bar = bar.copy()
-            
-            self.bars[symbol_id].append(completed_bar)
-            self.rolling_windows[symbol_id].append(completed_bar)
+
+            if self.ind_data:
+                self.ind_data.open.append(completed_bar['open'])
+                self.ind_data.high.append(completed_bar['high'])
+                self.ind_data.low.append(completed_bar['low'])
+                self.ind_data.close.append(completed_bar['close'])
+                self.ind_data.tick_volume.append(completed_bar['volume'])
+                self.ind_data.time.append(datetime.fromtimestamp(completed_bar['timestamp']))
 
             symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
             print(f"New bar closed [{symbol_name}] O={bar['open']:.5f} C={bar['close']:.5f}")
@@ -103,27 +145,21 @@ class CTraderApp:
                 'high': bar['close'],
                 'low': bar['close'],
                 'close': bar['close'],
-                'bid': bar['close'],
-                'ask': bar['close'],
                 'volume': 0,
                 'timestamp': time.time()
             }
 
-            self._fire_on_bar_event(symbol_id, completed_bar)
+            self._fire_on_bar_event()
 
-    def _fire_on_bar_event(self, symbol_id: int, bar: dict):
+    def _fire_on_bar_event(self):
         for handler in self.on_bar_handlers:
             try:
-                handler(symbol_id, bar)
+                handler(self.ind_data)
             except Exception as e:
                 print(f"Error in on_bar handler: {e}")
 
     def add_on_bar_handler(self, handler):
         self.on_bar_handlers.append(handler)
-
-    def command_loop(self):
-        """Your custom periodic task - runs every 10 seconds"""
-        print(f"Command loop running at {time.strftime('%H:%M:%S')}")
 
     def run(self):
         self.api.run()

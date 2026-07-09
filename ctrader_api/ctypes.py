@@ -1,16 +1,19 @@
 from collections import deque
 from datetime import datetime
 
-from .enums import SIG
+from .cenums import SIG
 
 class IndData:
     """Central data container - Python equivalent of MQL4 INDDATA struct"""
 
     def __init__(self):
+        self.symbol_id = 0
+        self.symbol_name = ""
+
         # --- Historical Rolling Windows ---
         self.open = deque(maxlen=500)
-        self.high = deque(maxlen=120)
-        self.low = deque(maxlen=120)
+        self.high = deque(maxlen=500)
+        self.low = deque(maxlen=500)
         self.close = deque(maxlen=500)
         self.time = deque(maxlen=500)
         self.tick_volume = deque(maxlen=500)
@@ -25,18 +28,18 @@ class IndData:
         self.adx = deque(maxlen=500)
         self.adx_plus = deque(maxlen=500)
         self.adx_minus = deque(maxlen=500)
-        self.ima5 = deque(maxlen=120)
-        self.ima14 = deque(maxlen=120)
-        self.ima30 = deque(maxlen=120)
-        self.ima60 = deque(maxlen=120)
+        self.ima5 = deque(maxlen=500)
+        self.ima14 = deque(maxlen=500)
+        self.ima30 = deque(maxlen=500)
+        self.ima60 = deque(maxlen=500)
         self.ima120 = deque(maxlen=500)
         self.ima240 = deque(maxlen=500)
         self.ima500 = deque(maxlen=500)
         self.avg_std = deque(maxlen=500)
 
         # --- Trading State ---
-        self.magic_number = 0
-        self.close_profit = 0.0
+        self.magic_number:int = 0
+        self.close_profit : float = 0.0
         self.stop_loss = 0.0
         self.curr_profit = 0.0
         self.max_profit = 0.0
@@ -98,7 +101,7 @@ class IndData:
         self.candle_traded = False
         self.curr_bar_orders = 0
 
-    def resize(self, primary: int = 500, secondary: int = 120):
+    def resize(self, primary: int = 500, secondary: int = 500):
         """Resize arrays (mainly for compatibility)"""
         print(f"IndData resized: primary={primary}, secondary={secondary}")
         # Note: deques have fixed maxlen, so we usually recreate if needed
