@@ -8,7 +8,7 @@ from .client import CTraderOpenAPI
 class CTraderApp:
     def __init__(self, config):
         self.api = CTraderOpenAPI(config)
-        self.api.on_ready = self.on_ready
+        self.api.on_ready = self.on_init
         self.api.on_message = self.on_tick
 
         self.bars = defaultdict(list)
@@ -22,7 +22,7 @@ class CTraderApp:
         # Custom event handlers
         self.on_bar_handlers = []
 
-    def on_ready(self):
+    def on_init(self):
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
         print("Starting OnBar system...")
 
@@ -30,6 +30,9 @@ class CTraderApp:
         d.addCallback(self.on_symbols_received)
 
         self.api.subscribe_spots([1, 2, 3, 4, 5, 6])
+
+        # Start command loop (every 10 seconds for example)
+        task.LoopingCall(self.command_loop).start(10.0)
 
     def on_symbols_received(self, response):
         symbols = getattr(response, 'symbol', [])
@@ -110,9 +113,9 @@ class CTraderApp:
     def add_on_bar_handler(self, handler):
         self.on_bar_handlers.append(handler)
 
-    def commandLoop(self):
-        """Your custom periodic task"""
-        print(f"Command loop running every {self.bar_interval} seconds...")
+    def command_loop(self):
+        """Your custom periodic task - runs every 10 seconds"""
+        print(f"Command loop running at {time.strftime('%H:%M:%S')}")
 
     def run(self):
         self.api.run()
