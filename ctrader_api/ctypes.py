@@ -1,74 +1,104 @@
-from dataclasses import dataclass
-from typing import List, Optional
-import numpy as np
+from collections import deque
 from datetime import datetime
 
-from .cenums import SIG   # We'll create this next
+from .enums import SIG
 
-@dataclass
 class IndData:
-    """Central data container - equivalent to C# IndData struct"""
-    
-    # --- 1. HISTORICAL ARRAYS ---
-    open: np.ndarray
-    high: np.ndarray
-    low: np.ndarray
-    close: np.ndarray
-    time: List[datetime]
-    tick_volume: np.ndarray
+    """Central data container - Python equivalent of MQL4 INDDATA struct"""
 
-    # --- Indicators ---
-    std_close: np.ndarray
-    std_open: np.ndarray
-    mfi: np.ndarray
-    obv: np.ndarray
-    rsi: np.ndarray
-    atr: np.ndarray
-    adx: np.ndarray
-    adx_plus: np.ndarray
-    adx_minus: np.ndarray
-    ima5: np.ndarray
-    ima14: np.ndarray
-    ima30: np.ndarray
-    ima60: np.ndarray
-    ima120: np.ndarray
-    ima240: np.ndarray
-    ima500: np.ndarray
-    avg_std: np.ndarray
+    def __init__(self):
+        # --- Historical Rolling Windows ---
+        self.open = deque(maxlen=500)
+        self.high = deque(maxlen=120)
+        self.low = deque(maxlen=120)
+        self.close = deque(maxlen=500)
+        self.time = deque(maxlen=500)
+        self.tick_volume = deque(maxlen=500)
 
-    # --- Trading State ---
-    magic_number: int = 0
-    close_profit: float = 0.0
-    stop_loss: float = 0.0
-    curr_profit: float = 0.0
-    max_profit: float = 0.0
-    trade_position: SIG = SIG.NOSIG
-    avg_trade_position: SIG = SIG.NOSIG
-    curr_spread: int = 0
-    shift: int = 0
-    bars_held: int = 0
-    base_slope: float = 0.0
+        # --- Indicators ---
+        self.std_close = deque(maxlen=500)
+        self.std_open = deque(maxlen=500)
+        self.mfi = deque(maxlen=500)
+        self.obv = deque(maxlen=500)
+        self.rsi = deque(maxlen=500)
+        self.atr = deque(maxlen=500)
+        self.adx = deque(maxlen=500)
+        self.adx_plus = deque(maxlen=500)
+        self.adx_minus = deque(maxlen=500)
+        self.ima5 = deque(maxlen=120)
+        self.ima14 = deque(maxlen=120)
+        self.ima30 = deque(maxlen=120)
+        self.ima60 = deque(maxlen=120)
+        self.ima120 = deque(maxlen=500)
+        self.ima240 = deque(maxlen=500)
+        self.ima500 = deque(maxlen=500)
+        self.avg_std = deque(maxlen=500)
 
-    # --- Physics / Advanced Scores ---
-    fmsr_raw: float = 0.0
-    fmsr_norm: float = 0.0
-    hold_score: float = 0.0
-    bayesian_hold_score: float = 0.0
-    neuron_hold_score: float = 0.0
-    fractal_alignment: float = 0.0
-    micro_lots: float = 0.0
-    conviction_factor: float = 0.0
-    physics_action: int = 0
-    cobb_douglas_action: int = 0
-    hyperbolic_action: int = 0
-    market_action: int = 0
-    pip_value: float = 0.0
-    point: float = 0.0
-    period: int = 0
-    pip_size: float = 0.0
-    current_period: float = 0.0
-    dbl_epsilon: float = 1e-10
-    spread_limit: float = 0.0
-    candle_traded: bool = False
-    digits: int = 5
-    total_orders: int = 0
+        # --- Trading State ---
+        self.magic_number = 0
+        self.close_profit = 0.0
+        self.stop_loss = 0.0
+        self.curr_profit = 0.0
+        self.max_profit = 0.0
+        self.trade_position = SIG.NOSIG
+        self.avg_trade_position = SIG.NOSIG
+        self.curr_spread = 0
+        self.shift = 0
+        self.bars_held = 0
+        self.base_slope = 0.0
+        self.new_bar = False
+        self.new_bar_open_time = datetime.now()
+        self.prev_bar_open_time = datetime.now()
+        self.curr_bar_orders = 0
+        self.candle_traded = False
+        self.spread_limit = 0
+        self.max_pyramid_trades = 0
+        self.total_orders = 0
+
+        # --- Physics / Advanced Scores ---
+        self.hold_score = 0.0
+        self.bayesian_hold_score = 0.0
+        self.neuron_hold_score = 0.0
+        self.fmsr_raw = 0.0
+        self.fmsr_norm = 0.0
+        self.fractal_alignment = 0.0
+        self.micro_lots = 0.0
+        self.conviction_factor = 0.0
+        self.physics_action = 0
+        self.cobb_douglas_action = 0
+        self.hyperbolic_action = 0
+        self.market_action = 0
+        self.pip_value = 0.0
+        self.point = 0.0
+        self.period = 0
+        self.pip_size = 0.0
+        self.current_period = 0.0
+        self.dbl_epsilon = 1e-10
+        self.consensus_threshold = 0.0
+
+    def clear(self):
+        """Clear all data - equivalent to MQL4 freeData()"""
+        for attr in [
+            'open', 'high', 'low', 'close', 'time', 'tick_volume',
+            'std_close', 'std_open', 'mfi', 'obv', 'rsi', 'atr',
+            'adx', 'adx_plus', 'adx_minus', 'ima5', 'ima14', 'ima30',
+            'ima60', 'ima120', 'ima240', 'ima500', 'avg_std'
+        ]:
+            getattr(self, attr).clear()
+
+        # Reset scalars
+        self.magic_number = 0
+        self.close_profit = 0.0
+        self.stop_loss = 0.0
+        self.curr_profit = 0.0
+        self.max_profit = 0.0
+        self.trade_position = SIG.NOSIG
+        self.bars_held = 0
+        self.new_bar = False
+        self.candle_traded = False
+        self.curr_bar_orders = 0
+
+    def resize(self, primary: int = 500, secondary: int = 120):
+        """Resize arrays (mainly for compatibility)"""
+        print(f"IndData resized: primary={primary}, secondary={secondary}")
+        # Note: deques have fixed maxlen, so we usually recreate if needed

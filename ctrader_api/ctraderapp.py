@@ -1,9 +1,12 @@
 from collections import defaultdict, deque
+from typing import Deque, Dict, Any
 import pandas as pd
 import time
 from twisted.internet import task
 
 from .client import CTraderOpenAPI
+from .ctypes import IndData
+from .cenums import SIG
 
 class CTraderApp:
     def __init__(self, config):
@@ -11,30 +14,27 @@ class CTraderApp:
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_tick
 
-        self.bars = defaultdict(list)
-        self.current_bar = {}
-        self.rolling_windows = defaultdict(lambda: deque(maxlen=500))
-        self.symbol_map = {}
+        # Rolling windows: symbol_id -> deque of dicts (bars)
+        self.rolling_windows: Dict[int, Deque[dict]] = defaultdict(lambda: deque(maxlen=500))
+        
+        # Full history (limited)
+        self.bars: Dict[int, Deque[dict]] = defaultdict(lambda: deque(maxlen=2000))
+
+        self.current_bar: Dict[int, dict] = {}
+        self.symbol_map: Dict[int, str] = {}
 
         self.bar_interval = 60
         self.last_bar_time = None
 
-        # Custom event handlers
         self.on_bar_handlers = []
 
     def on_init(self):
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
         print("Starting OnBar system...")
-
-        d = self.api.get_symbols()
-        d.addCallback(self.on_symbols_received)
-
-        self.api.subscribe_spots([1, 2, 3, 4, 5, 6])
-
-        # Start command loop (every 10 seconds for example)
-        task.LoopingCall(self.command_loop).start(10.0)
-
-    def on_symbols_received(self, response):
+        
+        # Initialize IndData
+        self.ind_data = IndData()
+        
         symbols = getattr(response, 'symbol', [])
         for symbol in symbols:
             self.symbol_map[symbol.symbolId] = symbol.symbolName
@@ -45,19 +45,23 @@ class CTraderApp:
 
         symbol_id = message.symbolId
         price = (message.bid + message.ask) / 2
+        bid = message.bid
+        ask = message.ask
         volume = getattr(message, 'volume', 0)
         timestamp = time.time()
 
-        self.update_current_bar(symbol_id, price, volume, timestamp)
+        self.update_current_bar(symbol_id, price, bid, ask, volume, timestamp)
         self.check_for_new_bar(timestamp)
 
-    def update_current_bar(self, symbol_id: int, price: float, volume: int, timestamp: float):
+    def update_current_bar(self, symbol_id: int, price: float, bid: float, ask: float, volume: int, timestamp: float):
         if symbol_id not in self.current_bar:
             self.current_bar[symbol_id] = {
                 'open': price,
                 'high': price,
                 'low': price,
                 'close': price,
+                'bid': bid,
+                'ask': ask,
                 'volume': volume,
                 'timestamp': timestamp
             }
@@ -67,6 +71,8 @@ class CTraderApp:
         bar['high'] = max(bar['high'], price)
         bar['low'] = min(bar['low'], price)
         bar['close'] = price
+        bar['bid'] = bid
+        bar['ask'] = ask
         bar['volume'] += volume
         bar['timestamp'] = timestamp
 
@@ -97,6 +103,8 @@ class CTraderApp:
                 'high': bar['close'],
                 'low': bar['close'],
                 'close': bar['close'],
+                'bid': bar['close'],
+                'ask': bar['close'],
                 'volume': 0,
                 'timestamp': time.time()
             }
