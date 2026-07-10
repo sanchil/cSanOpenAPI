@@ -1,5 +1,49 @@
 .
 ├── basic.py
+├── cindicators
+│   ├── adx.py
+│   ├── atr.py
+│   ├── __init__.py
+│   ├── ma.py
+│   ├── __pycache__
+│   │   ├── adx.cpython-311.pyc
+│   │   ├── adx.cpython-313.pyc
+│   │   ├── atr.cpython-311.pyc
+│   │   ├── atr.cpython-313.pyc
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── ma.cpython-311.pyc
+│   │   ├── ma.cpython-313.pyc
+│   │   ├── snapshot.cpython-311.pyc
+│   │   ├── snapshot.cpython-313.pyc
+│   │   ├── stddev.cpython-311.pyc
+│   │   ├── stddev.cpython-313.pyc
+│   │   ├── _utils.cpython-311.pyc
+│   │   └── _utils.cpython-313.pyc
+│   ├── snapshot.py
+│   ├── stddev.py
+│   └── _utils.py
+├── csignals
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── signals.cpython-311.pyc
+│   │   ├── signals.cpython-313.pyc
+│   │   ├── stats.cpython-311.pyc
+│   │   ├── stats.cpython-313.pyc
+│   │   └── types.cpython-313.pyc
+│   ├── signals.py
+│   ├── stats.py
+│   └── types.py
+├── cstrategies
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── __init__.cpython-313.pyc
+│   │   ├── strategies.cpython-311.pyc
+│   │   └── strategies.cpython-313.pyc
+│   └── strategies.py
 ├── ctrader_api
 │   ├── cenums.py
 │   ├── client.py
@@ -9,19 +53,26 @@
 │   ├── __init__.py
 │   └── __pycache__
 │       ├── cenums.cpython-311.pyc
+│       ├── cenums.cpython-313.pyc
 │       ├── client.cpython-311.pyc
 │       ├── client.cpython-313.pyc
 │       ├── config.cpython-311.pyc
 │       ├── config.cpython-313.pyc
 │       ├── ctraderapp.cpython-311.pyc
+│       ├── ctraderapp.cpython-313.pyc
 │       ├── ctypes.cpython-311.pyc
+│       ├── ctypes.cpython-313.pyc
 │       ├── __init__.cpython-311.pyc
 │       └── __init__.cpython-313.pyc
+├── ctypes
 ├── design.txt
 ├── main_fastapi.py
 ├── main.py
 ├── main_twisted.py
+├── __pycache__
+│   └── main_twisted.cpython-313.pyc
+├── Python.gitignore
 ├── requirements.txt
 └── tree.txt
 
-3 directories, 22 files
+11 directories, 65 files
