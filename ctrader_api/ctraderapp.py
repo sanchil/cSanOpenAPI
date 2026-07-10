@@ -71,20 +71,26 @@ class CTraderApp:
             d.addErrback(self.on_historical_error, symbol_id)
 
     def on_historical_bars_received(self, response, symbol_id: int):
-        bars = getattr(response, 'trendbar', [])       
-           
+        bars = getattr(response, 'trendbar', [])
         symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
 
         print(f"Loaded {len(bars)} historical bars for {symbol_name}")
 
         for bar in bars:
             if self.ind_data:
-                self.ind_data.open.append(getattr(bar, 'open', 0) / 100000)
-                self.ind_data.high.append(getattr(bar, 'high', 0) / 100000)
-                self.ind_data.low.append(getattr(bar, 'low', 0) / 100000)
-                self.ind_data.close.append(getattr(bar, 'close', 0) / 100000)
-                self.ind_data.tick_volume.append(getattr(bar, 'volume', 0) / 100)
-                self.ind_data.time.append(datetime.fromtimestamp(getattr(bar, 'timestamp', 0) / 1000))
+                open_price = getattr(bar, 'open', 0) / 100000
+                high_price = getattr(bar, 'high', 0) / 100000
+                low_price = getattr(bar, 'low', 0) / 100000
+                close_price = getattr(bar, 'close', 0) / 100000
+                volume = getattr(bar, 'volume', 0) / 100
+                ts = getattr(bar, 'timestamp', 0) / 1000
+
+                self.ind_data.open.append(open_price)
+                self.ind_data.high.append(high_price)
+                self.ind_data.low.append(low_price)
+                self.ind_data.close.append(close_price)
+                self.ind_data.tick_volume.append(volume)
+                self.ind_data.time.append(datetime.fromtimestamp(ts))
 
     def on_historical_error(self, failure, symbol_id: int):
         print(f"❌ Failed to load historical data for symbol {symbol_id}: {failure.getErrorMessage()}")
