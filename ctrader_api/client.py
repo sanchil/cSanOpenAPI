@@ -29,6 +29,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAOrderDetailsReq,
     ProtoOAOrderListByPositionIdReq,
     ProtoOAReconcileReq,
+    ProtoOASubscribeLiveTrendbarReq,
     ProtoOASubscribeSpotsReq,
     ProtoOASymbolCategoryListReq,
     ProtoOASymbolsListReq,
@@ -193,17 +194,80 @@ class CTraderOpenAPI:
         request.symbolId.extend(int(symbol_id) for symbol_id in ids)
         return self.send(request, client_msg_id)
 
+    # Minutes per ProtoOATrendbarPeriod name (used to size fromTimestamp windows)
+    _PERIOD_MINUTES = {
+        "M1": 1,
+        "M2": 2,
+        "M3": 3,
+        "M4": 4,
+        "M5": 5,
+        "M10": 10,
+        "M15": 15,
+        "M30": 30,
+        "H1": 60,
+        "H4": 240,
+        "H12": 720,
+        "D1": 1440,
+        "W1": 10080,
+        "MN1": 43200,
+    }
+
     def get_trendbars(
         self,
         symbol_id: int,
         period: str,
-        weeks: int = 4,
+        weeks: int | None = None,
+        count: int | None = 500,
+        from_timestamp: int | None = None,
+        to_timestamp: int | None = None,
         client_msg_id: str | None = None,
     ) -> defer.Deferred:
+        """Request historical trend bars (ProtoOAGetTrendbarsReq).
+
+        Preferred robust pattern for a fixed-size snapshot matching IndData:
+          get_trendbars(symbol_id, "M1", count=500)
+
+        Notes:
+          - fromTimestamp / toTimestamp are required by the protobuf schema.
+          - `count` limits bars returned *backwards from* toTimestamp.
+          - Oversized ranges without count may yield INCORRECT_BOUNDARIES.
+        """
+        period_key = period.upper()
         request = ProtoOAGetTrendbarsReq()
+        request.period = ProtoOATrendbarPeriod.Value(period_key)
+        request.symbolId = int(symbol_id)
+
+        to_ts = int(to_timestamp) if to_timestamp is not None else self._timestamp_now()
+        request.toTimestamp = to_ts
+
+        if from_timestamp is not None:
+            request.fromTimestamp = int(from_timestamp)
+        elif weeks is not None:
+            request.fromTimestamp = self._timestamp_weeks_ago(weeks)
+        else:
+            # Size the window from bar count + 50% slack for weekends/gaps
+            bar_count = int(count) if count is not None else 500
+            minutes = self._PERIOD_MINUTES.get(period_key, 1) * bar_count
+            minutes = int(minutes * 1.5) + self._PERIOD_MINUTES.get(period_key, 1)
+            request.fromTimestamp = to_ts - minutes * 60 * 1000
+
+        if count is not None:
+            request.count = int(count)
+
+        return self.send(request, client_msg_id)
+
+    def subscribe_live_trendbars(
+        self,
+        symbol_id: int,
+        period: str = "M1",
+        client_msg_id: str | None = None,
+    ) -> defer.Deferred:
+        """Subscribe to live trend bars for a symbol (requires spot subscription).
+
+        Live bars arrive inside ProtoOASpotEvent.trendbar once subscribed.
+        """
+        request = ProtoOASubscribeLiveTrendbarReq()
         request.period = ProtoOATrendbarPeriod.Value(period.upper())
-        request.fromTimestamp = self._timestamp_weeks_ago(weeks)
-        request.toTimestamp = self._timestamp_now()
         request.symbolId = int(symbol_id)
         return self.send(request, client_msg_id)
 

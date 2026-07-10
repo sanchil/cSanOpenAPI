@@ -1,45 +1,94 @@
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Deque, Iterable, Optional
 
 from .cenums import SIG
 
-class IndData:
-    """Central data container - Python equivalent of MQL4 INDDATA struct"""
+# cTrader relative price scale: prices are in 1/100000 of a price unit.
+PRICE_SCALE = 100_000
+DEFAULT_BAR_CAPACITY = 500
 
-    def __init__(self):
+
+def relative_to_price(relative: int | float, digits: Optional[int] = None) -> float:
+    """Convert a cTrader relative price (1/100000 units) to absolute price."""
+    price = float(relative) / PRICE_SCALE
+    if digits is not None:
+        return round(price, digits)
+    return price
+
+
+def decode_trendbar(bar, digits: Optional[int] = None) -> dict:
+    """
+    Decode a ProtoOATrendbar into absolute OHLCV + time.
+
+    Official encoding (see ProtoOATrendbar):
+      - low               absolute relative price
+      - open  = low + deltaOpen
+      - high  = low + deltaHigh
+      - close = low + deltaClose
+      - volume            tick volume (integer count, not scaled)
+      - utcTimestampInMinutes  Unix minutes of bar open
+    """
+    low_raw = int(getattr(bar, "low", 0) or 0)
+    delta_open = int(getattr(bar, "deltaOpen", 0) or 0)
+    delta_high = int(getattr(bar, "deltaHigh", 0) or 0)
+    delta_close = int(getattr(bar, "deltaClose", 0) or 0)
+    volume = int(getattr(bar, "volume", 0) or 0)
+    minutes = int(getattr(bar, "utcTimestampInMinutes", 0) or 0)
+
+    return {
+        "open": relative_to_price(low_raw + delta_open, digits),
+        "high": relative_to_price(low_raw + delta_high, digits),
+        "low": relative_to_price(low_raw, digits),
+        "close": relative_to_price(low_raw + delta_close, digits),
+        "volume": volume,  # tick volume — do NOT divide by 100
+        "time": datetime.fromtimestamp(minutes * 60, tz=timezone.utc).replace(tzinfo=None),
+        "utc_minutes": minutes,
+    }
+
+
+class IndData:
+    """Central data container - Python equivalent of MQL4 INDDATA struct.
+
+    Primary market series (open/high/low/close/time/tick_volume) are fixed-length
+    rolling windows (default 500 bars) kept in lock-step via append_bar().
+    """
+
+    def __init__(self, capacity: int = DEFAULT_BAR_CAPACITY):
         self.symbol_id = 0
         self.symbol_name = ""
+        self.capacity = capacity
 
-        # --- Historical Rolling Windows ---
-        self.open = deque(maxlen=500)
-        self.high = deque(maxlen=500)
-        self.low = deque(maxlen=500)
-        self.close = deque(maxlen=500)
-        self.time = deque(maxlen=500)
-        self.tick_volume = deque(maxlen=500)
+        # --- Historical Rolling Windows (OHLCV + Time) ---
+        self.open: Deque[float] = deque(maxlen=capacity)
+        self.high: Deque[float] = deque(maxlen=capacity)
+        self.low: Deque[float] = deque(maxlen=capacity)
+        self.close: Deque[float] = deque(maxlen=capacity)
+        self.time: Deque[datetime] = deque(maxlen=capacity)
+        self.tick_volume: Deque[float] = deque(maxlen=capacity)
 
         # --- Indicators ---
-        self.std_close = deque(maxlen=500)
-        self.std_open = deque(maxlen=500)
-        self.mfi = deque(maxlen=500)
-        self.obv = deque(maxlen=500)
-        self.rsi = deque(maxlen=500)
-        self.atr = deque(maxlen=500)
-        self.adx = deque(maxlen=500)
-        self.adx_plus = deque(maxlen=500)
-        self.adx_minus = deque(maxlen=500)
-        self.ima5 = deque(maxlen=500)
-        self.ima14 = deque(maxlen=500)
-        self.ima30 = deque(maxlen=500)
-        self.ima60 = deque(maxlen=500)
-        self.ima120 = deque(maxlen=500)
-        self.ima240 = deque(maxlen=500)
-        self.ima500 = deque(maxlen=500)
-        self.avg_std = deque(maxlen=500)
+        self.std_close = deque(maxlen=capacity)
+        self.std_open = deque(maxlen=capacity)
+        self.mfi = deque(maxlen=capacity)
+        self.obv = deque(maxlen=capacity)
+        self.rsi = deque(maxlen=capacity)
+        self.atr = deque(maxlen=capacity)
+        self.adx = deque(maxlen=capacity)
+        self.adx_plus = deque(maxlen=capacity)
+        self.adx_minus = deque(maxlen=capacity)
+        self.ima5 = deque(maxlen=capacity)
+        self.ima14 = deque(maxlen=capacity)
+        self.ima30 = deque(maxlen=capacity)
+        self.ima60 = deque(maxlen=capacity)
+        self.ima120 = deque(maxlen=capacity)
+        self.ima240 = deque(maxlen=capacity)
+        self.ima500 = deque(maxlen=capacity)
+        self.avg_std = deque(maxlen=capacity)
 
         # --- Trading State ---
-        self.magic_number:int = 0
-        self.close_profit : float = 0.0
+        self.magic_number: int = 0
+        self.close_profit: float = 0.0
         self.stop_loss = 0.0
         self.curr_profit = 0.0
         self.max_profit = 0.0
@@ -50,8 +99,8 @@ class IndData:
         self.bars_held = 0
         self.base_slope = 0.0
         self.new_bar = False
-        self.new_bar_open_time = datetime.now()
-        self.prev_bar_open_time = datetime.now()
+        self.new_bar_open_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.prev_bar_open_time = datetime.now(timezone.utc).replace(tzinfo=None)
         self.curr_bar_orders = 0
         self.candle_traded = False
         self.spread_limit = 0
@@ -79,17 +128,114 @@ class IndData:
         self.dbl_epsilon = 1e-10
         self.consensus_threshold = 0.0
 
+    # ------------------------------------------------------------------ series
+    def __len__(self) -> int:
+        return len(self.close)
+
+    @property
+    def bars(self) -> int:
+        """Number of bars currently held (alias for len)."""
+        return len(self.close)
+
+    def append_bar(
+        self,
+        open_: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: float,
+        time: datetime,
+    ) -> None:
+        """Atomically append one OHLCV bar so series lengths stay aligned."""
+        self.open.append(float(open_))
+        self.high.append(float(high))
+        self.low.append(float(low))
+        self.close.append(float(close))
+        self.tick_volume.append(float(volume))
+        self.time.append(time)
+
+    def append_decoded_bar(self, bar: dict) -> None:
+        """Append a bar dict as produced by decode_trendbar()."""
+        self.append_bar(
+            bar["open"],
+            bar["high"],
+            bar["low"],
+            bar["close"],
+            bar["volume"],
+            bar["time"],
+        )
+
+    def update_last_bar(
+        self,
+        open_: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: float,
+        time: Optional[datetime] = None,
+    ) -> None:
+        """Overwrite the most recent bar in place (live forming bar)."""
+        if not self.close:
+            self.append_bar(
+                open_, high, low, close, volume,
+                time or datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            return
+        self.open[-1] = float(open_)
+        self.high[-1] = float(high)
+        self.low[-1] = float(low)
+        self.close[-1] = float(close)
+        self.tick_volume[-1] = float(volume)
+        if time is not None:
+            self.time[-1] = time
+
+    def load_bars(self, bars: Iterable[dict]) -> int:
+        """Replace series with a sequence of decoded bar dicts (oldest→newest).
+
+        Only the last `capacity` bars are kept. Returns number of bars loaded.
+        """
+        self.clear_series()
+        bars_list = list(bars)
+        if len(bars_list) > self.capacity:
+            bars_list = bars_list[-self.capacity :]
+        for bar in bars_list:
+            self.append_decoded_bar(bar)
+        return len(bars_list)
+
+    def clear_series(self) -> None:
+        """Clear only OHLCV + time series (keep trading state / indicators empty)."""
+        for attr in ("open", "high", "low", "close", "time", "tick_volume"):
+            getattr(self, attr).clear()
+
     def clear(self):
-        """Clear all data - equivalent to MQL4 freeData()"""
+        """Clear all series data - equivalent to MQL4 freeData()."""
         for attr in [
-            'open', 'high', 'low', 'close', 'time', 'tick_volume',
-            'std_close', 'std_open', 'mfi', 'obv', 'rsi', 'atr',
-            'adx', 'adx_plus', 'adx_minus', 'ima5', 'ima14', 'ima30',
-            'ima60', 'ima120', 'ima240', 'ima500', 'avg_std'
+            "open",
+            "high",
+            "low",
+            "close",
+            "time",
+            "tick_volume",
+            "std_close",
+            "std_open",
+            "mfi",
+            "obv",
+            "rsi",
+            "atr",
+            "adx",
+            "adx_plus",
+            "adx_minus",
+            "ima5",
+            "ima14",
+            "ima30",
+            "ima60",
+            "ima120",
+            "ima240",
+            "ima500",
+            "avg_std",
         ]:
             getattr(self, attr).clear()
 
-        # Reset scalars
         self.magic_number = 0
         self.close_profit = 0.0
         self.stop_loss = 0.0
@@ -101,7 +247,38 @@ class IndData:
         self.candle_traded = False
         self.curr_bar_orders = 0
 
-    def resize(self, primary: int = 500, secondary: int = 500):
-        """Resize arrays (mainly for compatibility)"""
+    def resize(self, primary: int = DEFAULT_BAR_CAPACITY, secondary: int = DEFAULT_BAR_CAPACITY):
+        """Recreate series deques with a new maxlen, preserving existing values."""
+        capacity = int(primary)
+        self.capacity = capacity
+
+        def _recreate(old: deque) -> deque:
+            return deque(old, maxlen=capacity)
+
+        for attr in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "time",
+            "tick_volume",
+            "std_close",
+            "std_open",
+            "mfi",
+            "obv",
+            "rsi",
+            "atr",
+            "adx",
+            "adx_plus",
+            "adx_minus",
+            "ima5",
+            "ima14",
+            "ima30",
+            "ima60",
+            "ima120",
+            "ima240",
+            "ima500",
+            "avg_std",
+        ]:
+            setattr(self, attr, _recreate(getattr(self, attr)))
         print(f"IndData resized: primary={primary}, secondary={secondary}")
-        # Note: deques have fixed maxlen, so we usually recreate if needed

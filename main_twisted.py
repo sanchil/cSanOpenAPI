@@ -43,18 +43,24 @@ class OHLCVResource(Resource):
             reactor.callLater(timeout, timeout_d.errback, Exception(f"Request timeout after {timeout}s"))
 
             def on_success(response):
+                from ctrader_api.ctypes import decode_trendbar
+
                 bars = getattr(response, 'trendbar', [])
                 print(f"✅ Received {len(bars)} bars")
 
+                # ProtoOATrendbar uses low + deltaOpen/High/Close and
+                # utcTimestampInMinutes (not open/high/close/timestamp fields).
                 ohlcv = []
                 for bar in bars:
+                    decoded = decode_trendbar(bar)
                     ohlcv.append({
-                        "timestamp": getattr(bar, 'timestamp', None),
-                        "open": getattr(bar, 'open', 0) / 100000.0,
-                        "high": getattr(bar, 'high', 0) / 100000.0,
-                        "low": getattr(bar, 'low', 0) / 100000.0,
-                        "close": getattr(bar, 'close', 0) / 100000.0,
-                        "volume": getattr(bar, 'volume', 0) / 100.0,
+                        "timestamp": decoded["time"].isoformat() + "Z",
+                        "utc_minutes": decoded["utc_minutes"],
+                        "open": decoded["open"],
+                        "high": decoded["high"],
+                        "low": decoded["low"],
+                        "close": decoded["close"],
+                        "volume": decoded["volume"],  # tick volume
                     })
                 
                 response_data = {
