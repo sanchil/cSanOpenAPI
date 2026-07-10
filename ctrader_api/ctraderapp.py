@@ -1,9 +1,9 @@
 from collections import defaultdict, deque
 import pandas as pd
-from typing import Dict, List
 import time
 from twisted.internet import task
 from datetime import datetime
+from typing import Dict
 
 from .client import CTraderOpenAPI
 from .ctypes import IndData
@@ -15,14 +15,13 @@ class CTraderApp:
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_tick
 
-        self.ind_data: IndData | None = None
+        # Per-symbol historical data
+        self.hist_bars: Dict[int, IndData] = defaultdict(IndData)
 
         self.symbol_map = {}
-        self.current_bar = {}        
-        self.hist_bars: Dict[int, IndData] = defaultdict(IndData)
+        self.current_bar = {}
         self.bar_interval = 60
         self.last_bar_time = None
-        self.symbol_id_arr = [1,4] # 1- EURUSD, 4- USDJPY
 
         self.on_bar_handlers = []
 
@@ -30,8 +29,8 @@ class CTraderApp:
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
         print("Subscribing to spots...")
 
-        # Step 1: Subscribe to spots
-        d = self.api.subscribe_spots(symbol_ids=self.symbol_id_arr)
+        # Step 1: Subscribe
+        d = self.api.subscribe_spots([1, 3])
         d.addCallback(self.on_spots_subscribed)
         d.addErrback(self.on_subscription_error)
 
@@ -59,11 +58,9 @@ class CTraderApp:
         print(f"❌ Failed to load symbols: {failure}")
 
     def init_ind_data(self):
-        """Populate IndData with historical data"""
-        self.ind_data = IndData()       
-        
-        for symbol_id in self.symbol_id_arr:
-            self.hist_bars[symbol_id] = IndData()
+        """Populate historical data for each symbol"""
+        for symbol_id in [1, 3]:   # EURUSD, USDJPY
+            self.hist_bars[symbol_id] = IndData()   # Ensure fresh instance
             d = self.api.get_trendbars(
                 symbol_id=symbol_id, 
                 period="M1", 
@@ -75,33 +72,19 @@ class CTraderApp:
 
     def on_historical_bars_received(self, response, symbol_id: int):
         bars = getattr(response, 'trendbar', [])
-        
-        data = self.hist_bars[symbol_id]
-
         symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
 
         print(f"Loaded {len(bars)} historical bars for {symbol_name}")
-        for symbol_id, symbol_name in self.symbol_map.items():
-            data.symbol_id = symbol_id
-            data.symbol_name = symbol_name
 
+        data = self.hist_bars[symbol_id]
 
-            
         for bar in bars:
-            if data:
-                open_price = getattr(bar, 'open', 0) / 100000
-                high_price = getattr(bar, 'high', 0) / 100000
-                low_price = getattr(bar, 'low', 0) / 100000
-                close_price = getattr(bar, 'close', 0) / 100000
-                volume = getattr(bar, 'volume', 0) / 100
-                ts = getattr(bar, 'timestamp', 0) / 1000
-
-                data.open.append(open_price)
-                data.high.append(high_price)
-                data.low.append(low_price)
-                data.close.append(close_price)
-                data.tick_volume.append(volume)
-                data.time.append(datetime.fromtimestamp(ts))
+            data.open.append(getattr(bar, 'open', 0) / 100000)
+            data.high.append(getattr(bar, 'high', 0) / 100000)
+            data.low.append(getattr(bar, 'low', 0) / 100000)
+            data.close.append(getattr(bar, 'close', 0) / 100000)
+            data.tick_volume.append(getattr(bar, 'volume', 0) / 100)
+            data.time.append(datetime.fromtimestamp(getattr(bar, 'timestamp', 0) / 1000))
 
     def on_historical_error(self, failure, symbol_id: int):
         print(f"❌ Failed to load historical data for symbol {symbol_id}: {failure.getErrorMessage()}")
@@ -150,18 +133,17 @@ class CTraderApp:
 
     def on_bar(self):
         """Called when a new bar is completed"""
-
         for symbol_id, bar in list(self.current_bar.items()):
             completed_bar = bar.copy()
-            data = self.hist_bars[symbol_id]
 
-            if data:
-                data.open.append(completed_bar['open'])
-                data.high.append(completed_bar['high'])
-                data.low.append(completed_bar['low'])
-                data.close.append(completed_bar['close'])
-                data.tick_volume.append(completed_bar['volume'])
-                data.time.append(datetime.fromtimestamp(completed_bar['timestamp']))
+            # Append to per-symbol IndData
+            data = self.hist_bars[symbol_id]
+            data.open.append(completed_bar['open'])
+            data.high.append(completed_bar['high'])
+            data.low.append(completed_bar['low'])
+            data.close.append(completed_bar['close'])
+            data.tick_volume.append(completed_bar['volume'])
+            data.time.append(datetime.fromtimestamp(completed_bar['timestamp']))
 
             symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
             print(f"New bar closed [{symbol_name}] O={bar['open']:.5f} C={bar['close']:.5f}")
@@ -180,7 +162,7 @@ class CTraderApp:
     def _fire_on_bar_event(self):
         for handler in self.on_bar_handlers:
             try:
-                handler(self.ind_data)
+                handler(self.hist_bars)   # Pass the whole dict of IndData
             except Exception as e:
                 print(f"Error in on_bar handler: {e}")
 
