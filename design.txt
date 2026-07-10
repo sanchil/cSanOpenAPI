@@ -1,0 +1,63 @@
+The core objectives of cTrader openAPI python is to migrate as close as possible to mq4 code base and cBot code base in folder
+./code_references/cBot and ./code_references/mq4
+
+the mq4 is the original code base from where the functionality was migrated to cBot.
+
+Now the current object is to migrate to cTrader open api.
+
+the mq4 has a lot of code bloat and I do not need all of it. I only need to migrate its current code execution path.
+
+- it's execution path begins inside void   HSIG::initSIG(const SANSIGNALS &ss, SanUtils &util)
+
+
+wrt to code_base_v98.txt: Migrate the following:
+
+SAN_SIGNAL SanSignals::kineticAccelerationSIG(
+   const double fastSlope,      // e.g., 3-period slope
+   const double slowSlope,      // e.g., 10-period slope
+   const double tradeZoneCheck, // do not trade if slow slope is flat-lining
+   const double tradeCloseLimit,   // The ratio limit which closes this trade call
+   string funcLabel    // Which function makes this call
+)
+
+SAN_SIGNAL HSIG::fuseSIG(SAN_SIGNAL a, SAN_SIGNAL b, double weightA = 1.0, double weightB = 1.0)
+
+//+------------------------------------------------------------------+
+//|This is a generic differentiation formula                                                               |
+//+------------------------------------------------------------------+
+DTYPE Stats::slopeVal(
+   const double &sig[],
+   const int SLOPEDENOM = 3,
+   const int SLOPEDENOM_WIDE = 5,
+   const int shift = 1
+)
+
+//+------------------------------------------------------------------+
+//| computeStencilKinematics is a superior diff formula that can replace slopeVal  |
+//+------------------------------------------------------------------+
+DTYPE Stats::computeStencilKinematics(const double& sig[], int shift = 3)
+
+
+
+
+fastSIG = (fuseSIG(fuseSIG(ss.fsig5, ss.fsig14), ss.fsig30) != SAN_SIGNAL::NOSIG) ? fuseSIG(fuseSIG(ss.fsig5, ss.fsig14), ss.fsig30) : SAN_SIGNAL::CLOSE;
+
+
+SAN_SIGNAL SanSignals::fastSlowSIG(
+
+   const double fastSig,
+   const double slowSig,
+   const double thresholdPct=0.0005 // e.g., 0.0005 for 0.05% separation
+)
+
+ fsig5 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima5[SHIFT],0.0005);
+   fsig14 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima14[SHIFT],0.0005);
+   fsig30 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima30[SHIFT],0.0005);
+   fsig60 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima60[SHIFT],0.0005);
+   fsig120 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima120[SHIFT],0.0005);
+   fsig240 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima240[SHIFT],0.0005);
+   fsig500 = sig.fastSlowSIG(indData.close[SHIFT], indData.ima500[SHIFT],0.0005);
+
+
+   baseSlopeSIG = sig.kineticAccelerationSIG(baseSlopeData.val1,baseSlopeData.val2,0.015,-0.06," Base");
+   slope30SIG = sig.kineticAccelerationSIG(imaSlope30Data.val1,imaSlope30Data.val2,0.015,-0.2," Slope30");

@@ -1,13 +1,177 @@
+"""
+Common types module (CTypes.cs / mq4 equivalent).
+
+Single home for:
+  - enums: SIG, DECAY_STRATEGY
+  - value types: DTYPE, T_SIG
+  - market container: IndData
+  - price/trendbar helpers used by the Open API layer
+
+Prefer:
+    from ctrader_api.ctypes import SIG, IndData, DTYPE, T_SIG
+or:
+    from ctrader_api import SIG, IndData, DTYPE, T_SIG
+"""
+
+from __future__ import annotations
+
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Deque, Iterable, Optional
 
-from .cenums import SIG
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
 # cTrader relative price scale: prices are in 1/100000 of a price unit.
 PRICE_SCALE = 100_000
 DEFAULT_BAR_CAPACITY = 500
 
+
+# ---------------------------------------------------------------------------
+# Enums  (cenums / CTypes.cs)
+# ---------------------------------------------------------------------------
+
+class SIG(Enum):
+    """Trading signals — equivalent to C# SIG / MQL SAN_SIGNAL."""
+
+    HOLD = 101
+    BUY = 102
+    SELL = 103
+    CLOSE = 104
+    TRADE = 105
+    NOTRADE = 106
+    SIDEWAYS = 107
+    NOSIG = 108
+
+    def is_long(self) -> bool:
+        return self == SIG.BUY
+
+    def is_short(self) -> bool:
+        return self == SIG.SELL
+
+    def is_neutral(self) -> bool:
+        return self in (SIG.HOLD, SIG.NOSIG, SIG.NOTRADE, SIG.SIDEWAYS)
+
+    def is_directional(self) -> bool:
+        return self in (SIG.BUY, SIG.SELL)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class DECAY_STRATEGY(Enum):
+    """Adaptive decay source selection (CTypes.cs DECAY_STRATEGY)."""
+
+    STRAT_ATR = 0  # Volatility fuel
+    STRAT_ADX = 1  # Trend quality
+    STRAT_ER = 2  # Efficiency ratio
+    STRAT_MIX = 3  # Weighted mix (0.5 ATR + 0.3 ADX + 0.2 ER)
+
+
+# ---------------------------------------------------------------------------
+# Value types  (DTYPE / T_SIG)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DTYPE:
+    """Generic multi-value transport (C#/MQL DTYPE).
+
+    Used by slopeVal / computeStencilKinematics:
+      val1 — primary (fast slope / velocity)
+      val2 — secondary (wide slope / acceleration)
+      val3 — tertiary (acceleration / momentum ratio)
+      val4, val5 — spare
+    """
+
+    val1: float = float("nan")
+    val2: float = float("nan")
+    val3: float = float("nan")
+    val4: float = float("nan")
+    val5: float = float("nan")
+
+    def clear(self) -> None:
+        self.val1 = self.val2 = self.val3 = self.val4 = self.val5 = float("nan")
+
+
+@dataclass
+class T_SIG:
+    """Tactical signal bundle for one IndData snapshot / cycle.
+
+    Populated once per bar by SanSignals.init_sig(); consumed by cstrategies.
+    """
+
+    # Core path from design.txt / HSIG::initSIG
+    base_slope_sig: SIG = SIG.NOSIG
+    slope30_sig: SIG = SIG.NOSIG
+    fast_sig: SIG = SIG.NOSIG
+    fsig5: SIG = SIG.NOSIG
+    fsig14: SIG = SIG.NOSIG
+    fsig30: SIG = SIG.NOSIG
+    fsig60: SIG = SIG.NOSIG
+    fsig120: SIG = SIG.NOSIG
+    fsig240: SIG = SIG.NOSIG
+    fsig500: SIG = SIG.NOSIG
+
+    # Extended slots used by strategies / future ports
+    micro_wave_sig: SIG = SIG.NOSIG
+    macro_wave_sig: SIG = SIG.NOSIG
+    wave_tide_sig: SIG = SIG.NOSIG
+    trade_slope_sig: SIG = SIG.NOSIG
+    vol_momentum_sig: SIG = SIG.NOSIG
+    candle_vol_sig: SIG = SIG.NOSIG
+    slope_analyzer_sig: SIG = SIG.NOSIG
+    open_sig: SIG = SIG.NOSIG
+    close_sig: SIG = SIG.NOSIG
+    fuse_fast_sig: SIG = SIG.NOSIG
+    fuse_slow_sig: SIG = SIG.NOSIG
+
+    # Final strategy output for this cycle
+    strategy_sig: SIG = SIG.NOSIG
+
+    # Accompanying slope payloads (optional diagnostics)
+    base_slope_data: DTYPE = field(default_factory=DTYPE)
+    slope30_data: DTYPE = field(default_factory=DTYPE)
+
+    # camelCase aliases for C#/MQL naming parity
+    @property
+    def baseSlopeSIG(self) -> SIG:
+        return self.base_slope_sig
+
+    @baseSlopeSIG.setter
+    def baseSlopeSIG(self, v: SIG) -> None:
+        self.base_slope_sig = v
+
+    @property
+    def slope30SIG(self) -> SIG:
+        return self.slope30_sig
+
+    @slope30SIG.setter
+    def slope30SIG(self, v: SIG) -> None:
+        self.slope30_sig = v
+
+    @property
+    def fastSIG(self) -> SIG:
+        return self.fast_sig
+
+    @fastSIG.setter
+    def fastSIG(self, v: SIG) -> None:
+        self.fast_sig = v
+
+    @property
+    def microWaveSIG(self) -> SIG:
+        return self.micro_wave_sig
+
+    @microWaveSIG.setter
+    def microWaveSIG(self, v: SIG) -> None:
+        self.micro_wave_sig = v
+
+
+# ---------------------------------------------------------------------------
+# Open API price / trendbar helpers
+# ---------------------------------------------------------------------------
 
 def relative_to_price(relative: int | float, digits: Optional[int] = None) -> float:
     """Convert a cTrader relative price (1/100000 units) to absolute price."""
@@ -47,11 +211,16 @@ def decode_trendbar(bar, digits: Optional[int] = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# IndData — central market / indicator container
+# ---------------------------------------------------------------------------
+
 class IndData:
-    """Central data container - Python equivalent of MQL4 INDDATA struct.
+    """Central data container — Python equivalent of MQL4 INDDATA / C# IndData.
 
     Primary market series (open/high/low/close/time/tick_volume) are fixed-length
     rolling windows (default 500 bars) kept in lock-step via append_bar().
+    Indicator series are filled once per cycle by cindicators.compute_indicators.
     """
 
     def __init__(self, capacity: int = DEFAULT_BAR_CAPACITY):
@@ -208,7 +377,7 @@ class IndData:
             getattr(self, attr).clear()
 
     def clear(self):
-        """Clear all series data - equivalent to MQL4 freeData()."""
+        """Clear all series data — equivalent to MQL4 freeData()."""
         for attr in [
             "open",
             "high",
@@ -282,3 +451,16 @@ class IndData:
         ]:
             setattr(self, attr, _recreate(getattr(self, attr)))
         print(f"IndData resized: primary={primary}, secondary={secondary}")
+
+
+__all__ = [
+    "PRICE_SCALE",
+    "DEFAULT_BAR_CAPACITY",
+    "SIG",
+    "DECAY_STRATEGY",
+    "DTYPE",
+    "T_SIG",
+    "IndData",
+    "relative_to_price",
+    "decode_trendbar",
+]

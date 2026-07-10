@@ -6,12 +6,17 @@ from .client import CTraderOpenAPI
 from .ctypes import (
     DEFAULT_BAR_CAPACITY,
     IndData,
+    SIG,
+    T_SIG,
     decode_trendbar,
     relative_to_price,
 )
 
 # Indicators computed once per cycle from the IndData OHLCV snapshot
 from cindicators.snapshot import compute_indicators
+# Signals + strategies (design.txt execution path)
+from csignals import SanSignals
+from cstrategies import CStrategies
 
 
 class CTraderApp:
@@ -24,11 +29,14 @@ class CTraderApp:
       3. ProtoOAGetTrendbarsReq        — seed IndData (OHLCV snapshot, count=500)
       4. ProtoOASubscribeLiveTrendbarReq — official live bars on spots
 
+    Per bar cycle (once):
+      compute_indicators(ind) → strategies.evaluate(ind) → T_SIG + trade SIG
+
     self.hist_bars[symbol_id] is an IndData rolling window of Open/High/Low/
     Close/Volume/Time (maxlen=DEFAULT_BAR_CAPACITY).
     """
 
-    def __init__(self, config):
+    def __init__(self, config, active_strategy: int = 1):
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_tick
@@ -47,6 +55,12 @@ class CTraderApp:
         self._last_live_bar_minutes: Dict[int, int] = {}
         self._hist_pending = 0
         self._hist_ready = False
+
+        # design.txt: signals → strategies (once per cycle)
+        self.signals = SanSignals(default_shift=1)
+        self.strategies = CStrategies(self.signals, active=active_strategy)
+        self.last_t_sig: Dict[int, T_SIG] = {}
+        self.last_trade_sig: Dict[int, SIG] = {}
 
         self.on_bar_handlers = []
 
@@ -98,6 +112,9 @@ class CTraderApp:
             data.symbol_id = symbol_id
             data.symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
             data.period = self.bar_interval
+            data.shift = 1  # MQL closed-bar default for signals
+            if not data.pip_size:
+                data.pip_size = 0.0001
             self.hist_bars[symbol_id] = data
 
             d = self.api.get_trendbars(
@@ -123,9 +140,10 @@ class CTraderApp:
         if decoded:
             self._last_live_bar_minutes[symbol_id] = decoded[-1]["utc_minutes"]
 
-        # Once-per-seed cycle: fill indicator snapshot from OHLCV
+        # Once-per-seed cycle: indicators → signals → strategy
+        trade_sig = SIG.NOSIG
         if loaded:
-            self.refresh_indicators(data)
+            trade_sig = self.run_signal_cycle(data, symbol_id)
 
         print(
             f"✅ Loaded {loaded}/{len(raw_bars)} historical bars for {symbol_name} "
@@ -138,7 +156,7 @@ class CTraderApp:
                 f"   last bar: t={last['time']} O={last['open']:.5f} "
                 f"H={last['high']:.5f} L={last['low']:.5f} "
                 f"C={last['close']:.5f} V={last['volume']} "
-                f"ATR={atr_last:.5f}"
+                f"ATR={atr_last:.5f} SIG={trade_sig}"
             )
 
         self._hist_pending -= 1
@@ -261,8 +279,8 @@ class CTraderApp:
             data.append_decoded_bar(decoded)
             self._last_live_bar_minutes[symbol_id] = minutes
 
-            # Once per bar cycle: recompute indicator snapshot for this symbol
-            self.refresh_indicators(data)
+            # Once per bar cycle: indicators → signals → strategy
+            trade_sig = self.run_signal_cycle(data, symbol_id)
 
             symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
             if len(data.close) >= 2:
@@ -273,7 +291,8 @@ class CTraderApp:
                     f"L={data.low[-2]:.5f} C={data.close[-2]:.5f} "
                     f"V={data.tick_volume[-2]:.0f} "
                     f"ATR={data.atr[-1] if data.atr else float('nan'):.5f} "
-                    f"ADX={data.adx[-1] if data.adx else float('nan'):.2f}"
+                    f"ADX={data.adx[-1] if data.adx else float('nan'):.2f} "
+                    f"SIG={trade_sig}"
                 )
             self._fire_on_bar_event()
 
@@ -325,12 +344,13 @@ class CTraderApp:
             )
 
             # Once per bar cycle
-            self.refresh_indicators(data)
+            trade_sig = self.run_signal_cycle(data, symbol_id)
 
             symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
             print(
                 f"New bar closed [{symbol_name}] "
-                f"O={bar['open']:.5f} C={bar['close']:.5f} (synthetic)"
+                f"O={bar['open']:.5f} C={bar['close']:.5f} "
+                f"SIG={trade_sig} (synthetic)"
             )
 
             self.current_bar[symbol_id] = {
@@ -351,6 +371,35 @@ class CTraderApp:
         current OHLCV window. Safe to call after history load or bar close.
         """
         return compute_indicators(data)
+
+    def run_signal_cycle(
+        self,
+        data: IndData,
+        symbol_id: Optional[int] = None,
+        *,
+        total_trade_profits: float = 0.0,
+    ) -> SIG:
+        """
+        Once-per-cycle pipeline (design.txt):
+
+          1. compute_indicators(ind)   — MA/ATR/ADX/StdDev snapshot
+          2. strategies.evaluate(ind)  — init_sig → Strategy_N → trade SIG
+
+        Within the cycle, read T_SIG / strategy SIG from last_* maps; do not
+        re-run indicators or signals repeatedly for the same bar.
+        """
+        self.refresh_indicators(data)
+        sid = symbol_id if symbol_id is not None else data.symbol_id
+        trade_sig = self.strategies.evaluate(
+            data,
+            total_trade_profits=total_trade_profits,
+        )
+        t_sig = self.strategies.last_t_sig
+        if t_sig is not None:
+            self.last_t_sig[sid] = t_sig
+        self.last_trade_sig[sid] = trade_sig
+        data.trade_position = trade_sig
+        return trade_sig
 
     def _fire_on_bar_event(self):
         for handler in self.on_bar_handlers:
