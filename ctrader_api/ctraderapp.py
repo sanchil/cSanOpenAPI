@@ -22,6 +22,7 @@ class CTraderApp:
         self.current_bar = {}
         self.bar_interval = 60
         self.last_bar_time = None
+        self.fxpair_arr = [1, 4]   # EURUSD, USDJPY
 
         self.on_bar_handlers = []
 
@@ -30,7 +31,7 @@ class CTraderApp:
         print("Subscribing to spots...")
 
         # Step 1: Subscribe
-        d = self.api.subscribe_spots([1, 3])
+        d = self.api.subscribe_spots(self.fxpair_arr)
         d.addCallback(self.on_spots_subscribed)
         d.addErrback(self.on_subscription_error)
 
@@ -59,8 +60,8 @@ class CTraderApp:
 
     def init_ind_data(self):
         """Populate historical data for each symbol"""
-        for symbol_id in [1, 3]:   # EURUSD, USDJPY
-            self.hist_bars[symbol_id] = IndData()   # Ensure fresh instance
+        for symbol_id in self.fxpair_arr:
+            self.hist_bars[symbol_id] = IndData()   # Fresh instance
             d = self.api.get_trendbars(
                 symbol_id=symbol_id, 
                 period="M1", 
