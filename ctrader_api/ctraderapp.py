@@ -20,24 +20,47 @@ class CTraderApp:
         self.current_bar = {}
         self.bar_interval = 60
         self.last_bar_time = None
+        self.symbol_id_arr = [1,4] # 1- EURUSD, 4- USDJPY
 
         self.on_bar_handlers = []
 
     def on_init(self):
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
-        print("Initializing IndData with historical data...")
+        print("Subscribing to spots...")
 
-        self.init_ind_data()
+        # Step 1: Subscribe to spots
+        d = self.api.subscribe_spots(symbol_ids=self.symbol_id_arr)
+        d.addCallback(self.on_spots_subscribed)
+        d.addErrback(self.on_subscription_error)
 
+    def on_spots_subscribed(self, _):
+        print("✅ Successfully subscribed to live prices")
+
+        # Step 2: Get symbol names
         d = self.api.get_symbols()
         d.addCallback(self.on_symbols_received)
+        d.addErrback(self.on_symbols_error)
 
-        self.api.subscribe_spots([1, 3])
+    def on_symbols_received(self, response):
+        symbols = getattr(response, 'symbol', [])
+        for symbol in symbols:
+            self.symbol_map[symbol.symbolId] = symbol.symbolName
+        print(f"✅ Loaded {len(self.symbol_map)} symbols")
+
+        # Step 3: Load historical data
+        self.init_ind_data()
+
+    def on_subscription_error(self, failure):
+        print(f"❌ Subscription failed: {failure}")
+
+    def on_symbols_error(self, failure):
+        print(f"❌ Failed to load symbols: {failure}")
 
     def init_ind_data(self):
+        """Populate IndData with historical data"""
         self.ind_data = IndData()
 
-        for symbol_id in [1, 3]:
+        for symbol_id in self.symbol_id_arr:
             d = self.api.get_trendbars(
                 symbol_id=symbol_id, 
                 period="M1", 
@@ -47,14 +70,11 @@ class CTraderApp:
             d.addCallback(self.on_historical_bars_received, symbol_id)
             d.addErrback(self.on_historical_error, symbol_id)
 
-    def on_symbols_received(self, response):
-        symbols = getattr(response, 'symbol', [])
-        for symbol in symbols:
-            self.symbol_map[symbol.symbolId] = symbol.symbolName
-
     def on_historical_bars_received(self, response, symbol_id: int):
-        bars = getattr(response, 'trendbar', [])
-        symbol_name = f"ID_{symbol_id}"
+        bars = getattr(response, 'trendbar', [])       
+           
+        symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
+
         print(f"Loaded {len(bars)} historical bars for {symbol_name}")
 
         for bar in bars:
