@@ -9,6 +9,8 @@ the mq4 has a lot of code bloat and I do not need all of it. I only need to migr
 
 - it's execution path begins inside void   HSIG::initSIG(const SANSIGNALS &ss, SanUtils &util)
 
+TASK 1:
+
 
 wrt to code_base_v98.txt: Migrate the following:
 
@@ -61,3 +63,21 @@ SAN_SIGNAL SanSignals::fastSlowSIG(
 
    baseSlopeSIG = sig.kineticAccelerationSIG(baseSlopeData.val1,baseSlopeData.val2,0.015,-0.06," Base");
    slope30SIG = sig.kineticAccelerationSIG(imaSlope30Data.val1,imaSlope30Data.val2,0.015,-0.2," Slope30");
+
+
+TASK 2:
+
+Task 1 is complete and now to move on to task 2. The app needs an order execution framework to place orders based on buy and sell.
+Place just one order on buy/sell signal.
+Close trade on close signal or an opposite to current trade signal
+If there is an existing trade in place do not place another order
+Do not place stop loss or take profit limits.
+Take cues from code_references/mq4/code_base_v98.txt and code_references/cBot/PhyBot.cs
+
+These contain a strategy that places one trade on each new bar as long as the signal holds for upto 15 trades at one time
+We will not do that and place only a single trade at a time
+
+
+
+
+

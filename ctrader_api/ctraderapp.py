@@ -11,6 +11,7 @@ from .ctypes import (
     decode_trendbar,
     relative_to_price,
 )
+from .execution import OrderExecutor
 
 # Indicators computed once per cycle from the IndData OHLCV snapshot
 from cindicators.snapshot import compute_indicators
@@ -27,19 +28,29 @@ class CTraderApp:
       1. ProtoOASubscribeSpotsReq      — live quotes
       2. ProtoOASymbolsListReq         — symbol id → name map
       3. ProtoOAGetTrendbarsReq        — seed IndData (OHLCV snapshot, count=500)
-      4. ProtoOASubscribeLiveTrendbarReq — official live bars on spots
+      4. Reconcile open positions (OrderExecutor)
+      5. ProtoOASubscribeLiveTrendbarReq — official live bars on spots
 
     Per bar cycle (once):
-      compute_indicators(ind) → strategies.evaluate(ind) → T_SIG + trade SIG
+      compute_indicators → strategies.evaluate → OrderExecutor.handle_signal
 
-    self.hist_bars[symbol_id] is an IndData rolling window of Open/High/Low/
-    Close/Volume/Time (maxlen=DEFAULT_BAR_CAPACITY).
+    TASK 2 execution policy: single market trade per symbol, no SL/TP,
+    close on CLOSE or opposite signal, never pyramid.
     """
 
-    def __init__(self, config, active_strategy: int = 1):
+    def __init__(
+        self,
+        config,
+        active_strategy: int = 1,
+        *,
+        trade_volume: float = 10000.0,
+        trade_label: str = "GrokApp",
+        trading_enabled: bool = True,
+        dry_run: bool = False,
+    ):
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
-        self.api.on_message = self.on_tick
+        self.api.on_message = self.on_message
 
         # Per-symbol historical data: Dict[symbol_id, IndData]
         self.hist_bars: Dict[int, IndData] = {}
@@ -61,6 +72,15 @@ class CTraderApp:
         self.strategies = CStrategies(self.signals, active=active_strategy)
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
+
+        # TASK 2: single-trade order execution (no SL/TP, no pyramid)
+        self.executor = OrderExecutor(
+            self.api,
+            volume=trade_volume,
+            label=trade_label,
+            dry_run=dry_run,
+            enabled=trading_enabled,
+        )
 
         self.on_bar_handlers = []
 
@@ -140,10 +160,12 @@ class CTraderApp:
         if decoded:
             self._last_live_bar_minutes[symbol_id] = decoded[-1]["utc_minutes"]
 
-        # Once-per-seed cycle: indicators → signals → strategy
+        # Once-per-seed: indicators + signals only (no live trading until ready)
         trade_sig = SIG.NOSIG
         if loaded:
-            trade_sig = self.run_signal_cycle(data, symbol_id)
+            trade_sig = self.run_signal_cycle(
+                data, symbol_id, execute=False
+            )
 
         print(
             f"✅ Loaded {loaded}/{len(raw_bars)} historical bars for {symbol_name} "
@@ -173,8 +195,29 @@ class CTraderApp:
             self._on_all_historical_loaded()
 
     def _on_all_historical_loaded(self):
-        """After history is in, subscribe to live trendbars for robust updates."""
+        """After history is in: reconcile positions, then subscribe live bars."""
         self._hist_ready = True
+        print("Reconciling open positions…")
+        d = self.executor.sync_positions()
+        d.addCallback(self._on_positions_synced)
+        d.addErrback(self._on_positions_sync_error)
+
+    def _on_positions_synced(self, positions):
+        n = len(positions) if positions is not None else 0
+        print(f"✅ Position book synced ({n} open under label={self.executor.label})")
+        for sid, pos in (positions or {}).items():
+            name = self.symbol_map.get(sid, sid)
+            print(f"   {name}: {pos.side.name} vol={pos.volume} id={pos.position_id}")
+            if sid in self.hist_bars:
+                self.hist_bars[sid].trade_position = pos.side
+                self.hist_bars[sid].total_orders = 1
+        self._subscribe_live_trendbars()
+
+    def _on_positions_sync_error(self, failure):
+        print(f"⚠️  Position reconcile failed: {failure.getErrorMessage()} — continuing")
+        self._subscribe_live_trendbars()
+
+    def _subscribe_live_trendbars(self):
         print("Subscribing to live trendbars...")
         for symbol_id in self.fxpair_arr:
             d = self.api.subscribe_live_trendbars(
@@ -195,10 +238,19 @@ class CTraderApp:
                 )
             )
 
-    # --------------------------------------------------------------- live ticks
+    # --------------------------------------------------------------- messages
+    def on_message(self, message):
+        """Dispatch inbound extracted protobuf messages."""
+        # Execution events (fills / closes) — update order book
+        if hasattr(message, "executionType"):
+            self.executor.on_execution_event(message)
+            return
+
+        # Spot / price path
+        self.on_tick(message)
+
     def on_tick(self, message):
-        """Handle inbound extracted protobuf messages (primarily spot events)."""
-        # Spot events always carry symbolId; bid/ask are optional uint64 relative prices
+        """Handle spot events (live prices / trendbars)."""
         if not hasattr(message, "symbolId"):
             return
 
@@ -378,15 +430,19 @@ class CTraderApp:
         symbol_id: Optional[int] = None,
         *,
         total_trade_profits: float = 0.0,
+        execute: bool = True,
     ) -> SIG:
         """
-        Once-per-cycle pipeline (design.txt):
+        Once-per-cycle pipeline (design.txt TASK 1 + TASK 2):
 
-          1. compute_indicators(ind)   — MA/ATR/ADX/StdDev snapshot
-          2. strategies.evaluate(ind)  — init_sig → Strategy_N → trade SIG
+          1. compute_indicators(ind)        — MA/ATR/ADX/StdDev snapshot
+          2. strategies.evaluate(ind)       — init_sig → Strategy_N → trade SIG
+          3. executor.handle_signal(...)    — single market trade / close
 
         Within the cycle, read T_SIG / strategy SIG from last_* maps; do not
         re-run indicators or signals repeatedly for the same bar.
+
+        Set execute=False for historical seed (signals only, no orders).
         """
         self.refresh_indicators(data)
         sid = symbol_id if symbol_id is not None else data.symbol_id
@@ -398,7 +454,25 @@ class CTraderApp:
         if t_sig is not None:
             self.last_t_sig[sid] = t_sig
         self.last_trade_sig[sid] = trade_sig
-        data.trade_position = trade_sig
+
+        # Reflect strategy signal; open side is tracked by executor
+        if not self.executor.has_position(sid):
+            data.trade_position = trade_sig if trade_sig in (SIG.BUY, SIG.SELL) else SIG.NOSIG
+            data.total_orders = 0
+        else:
+            data.trade_position = self.executor.position_side(sid)
+            data.total_orders = 1
+
+        if execute and self._hist_ready:
+            self.executor.handle_signal(sid, trade_sig)
+            # Refresh local trade_position after action
+            if self.executor.has_position(sid):
+                data.trade_position = self.executor.position_side(sid)
+                data.total_orders = 1
+            elif trade_sig in (SIG.CLOSE,) or not self.executor.has_position(sid):
+                if not self.executor.has_position(sid):
+                    data.total_orders = 0
+
         return trade_sig
 
     def _fire_on_bar_event(self):

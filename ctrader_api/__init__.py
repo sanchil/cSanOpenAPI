@@ -12,6 +12,7 @@ from .ctypes import (
     decode_trendbar,
     relative_to_price,
 )
+from .execution import ExecutionResult, OpenPosition, OrderExecutor
 
 # CTraderApp is imported lazily — it pulls in cindicators/csignals/cstrategies,
 # which import ctypes and would cycle if loaded here eagerly.
@@ -29,6 +30,9 @@ __all__ = [
     "DEFAULT_BAR_CAPACITY",
     "decode_trendbar",
     "relative_to_price",
+    "OrderExecutor",
+    "OpenPosition",
+    "ExecutionResult",
 ]
 
 

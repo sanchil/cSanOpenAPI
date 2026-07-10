@@ -50,6 +50,7 @@
 │   ├── config.py
 │   ├── ctraderapp.py
 │   ├── ctypes.py
+│   ├── execution.py
 │   ├── __init__.py
 │   └── __pycache__
 │       ├── cenums.cpython-311.pyc
@@ -62,6 +63,8 @@
 │       ├── ctraderapp.cpython-313.pyc
 │       ├── ctypes.cpython-311.pyc
 │       ├── ctypes.cpython-313.pyc
+│       ├── execution.cpython-311.pyc
+│       ├── execution.cpython-313.pyc
 │       ├── __init__.cpython-311.pyc
 │       └── __init__.cpython-313.pyc
 ├── ctypes
@@ -75,4 +78,4 @@
 ├── requirements.txt
 └── tree.txt
 
-11 directories, 65 files
+11 directories, 68 files

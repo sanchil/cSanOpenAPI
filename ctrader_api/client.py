@@ -293,7 +293,18 @@ class CTraderOpenAPI:
         order_type: str = "MARKET",
         price: float | None = None,
         client_msg_id: str | None = None,
+        *,
+        label: str | None = None,
+        comment: str | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> defer.Deferred:
+        """Place an order via ProtoOANewOrderReq.
+
+        ``volume`` is in symbol units (not lots); protocol encodes as units*100.
+        By default no stop-loss / take-profit is attached (TASK 2 policy).
+        Pass stop_loss / take_profit only when explicitly required.
+        """
         request = ProtoOANewOrderReq()
         request.symbolId = int(symbol_id)
         request.orderType = ProtoOAOrderType.Value(order_type.upper())
@@ -309,6 +320,16 @@ class CTraderOpenAPI:
                 raise ValueError("price is required for STOP orders")
             request.stopPrice = float(price)
 
+        if label:
+            request.label = str(label)
+        if comment:
+            request.comment = str(comment)
+        # Optional protection — omitted by default for TASK 2
+        if stop_loss is not None:
+            request.stopLoss = float(stop_loss)
+        if take_profit is not None:
+            request.takeProfit = float(take_profit)
+
         return self.send(request, client_msg_id)
 
     def new_market_order(
@@ -317,8 +338,20 @@ class CTraderOpenAPI:
         trade_side: str,
         volume: float,
         client_msg_id: str | None = None,
+        *,
+        label: str | None = None,
+        comment: str | None = None,
     ) -> defer.Deferred:
-        return self.new_order(symbol_id, trade_side, volume, "MARKET", client_msg_id=client_msg_id)
+        """Market order with no SL/TP (TASK 2)."""
+        return self.new_order(
+            symbol_id,
+            trade_side,
+            volume,
+            "MARKET",
+            client_msg_id=client_msg_id,
+            label=label,
+            comment=comment,
+        )
 
     def new_limit_order(
         self,
