@@ -1,4 +1,4 @@
-# grokApp_v6 — Project Instructions
+# cSanOpenAPI — Project Instructions
 
 Python trading app that ports an MQ4 / cBot strategy stack onto the **cTrader Open API** (`ctrader-open-api` + Twisted). Migrate only the **current live execution path**, not full MQ4 bloat.
 
