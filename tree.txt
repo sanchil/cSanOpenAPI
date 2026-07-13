@@ -1,37 +1,103 @@
 .
-├── capp/                    # BUSINESS LAYER (signals, strategies, app loop)
-│   ├── __init__.py
-│   ├── ctraderapp.py         # CTraderApp (was ctrader_api/ctraderapp.py)
-│   ├── csignals/
-│   │   ├── __init__.py
-│   │   ├── signals.py
-│   │   ├── stats.py
-│   │   └── types.py
-│   └── cstrategies/
-│       ├── __init__.py
-│       └── strategies.py
-├── csys/                    # SYSTEM LAYER (Open API, types, indicators)
-│   ├── __init__.py
-│   ├── ctypes.py            # facade → csys.ctrader_api.ctypes
-│   ├── ctrader_api/
-│   │   ├── __init__.py
-│   │   ├── client.py
-│   │   ├── config.py
-│   │   ├── ctypes.py
-│   │   ├── cenums.py
-│   │   └── execution.py
-│   └── cindicators/
-│       ├── __init__.py
-│       ├── _utils.py
-│       ├── adx.py
-│       ├── atr.py
-│       ├── ma.py
-│       ├── snapshot.py
-│       └── stddev.py
-├── code_references/
+├── AGENTS.md
+├── basic.py
+├── capp
+│   ├── csignals
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-313.pyc
+│   │   │   ├── signals.cpython-311.pyc
+│   │   │   ├── signals.cpython-313.pyc
+│   │   │   ├── stats.cpython-311.pyc
+│   │   │   └── stats.cpython-313.pyc
+│   │   ├── signals.py
+│   │   ├── stats.py
+│   │   └── types.py
+│   ├── cstrategies
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-313.pyc
+│   │   │   ├── strategies.cpython-311.pyc
+│   │   │   └── strategies.cpython-313.pyc
+│   │   └── strategies.py
+│   ├── ctraderapp.py
+│   ├── __init__.py
+│   └── __pycache__
+│       ├── ctraderapp.cpython-311.pyc
+│       ├── ctraderapp.cpython-313.pyc
+│       ├── __init__.cpython-311.pyc
+│       └── __init__.cpython-313.pyc
+├── code_references
+│   ├── cBot
+│   │   ├── Class.cs
+│   │   ├── CSignal.cs
+│   │   ├── CStats.cs
+│   │   ├── CStrategies.cs
+│   │   ├── CTypes.cs
+│   │   ├── CUtil.cs
+│   │   ├── PhyBot.cs
+│   │   ├── Phy.Bot.csproj
+│   │   ├── Phy.Lib.csproj
+│   │   └── PhysicsEngine.cs
+│   └── mq4
+│       └── code_base_v98.txt
+├── csys
+│   ├── cindicators
+│   │   ├── adx.py
+│   │   ├── atr.py
+│   │   ├── __init__.py
+│   │   ├── ma.py
+│   │   ├── __pycache__
+│   │   │   ├── adx.cpython-311.pyc
+│   │   │   ├── adx.cpython-313.pyc
+│   │   │   ├── atr.cpython-311.pyc
+│   │   │   ├── atr.cpython-313.pyc
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-313.pyc
+│   │   │   ├── ma.cpython-311.pyc
+│   │   │   ├── ma.cpython-313.pyc
+│   │   │   ├── snapshot.cpython-311.pyc
+│   │   │   ├── snapshot.cpython-313.pyc
+│   │   │   ├── stddev.cpython-311.pyc
+│   │   │   ├── stddev.cpython-313.pyc
+│   │   │   ├── _utils.cpython-311.pyc
+│   │   │   └── _utils.cpython-313.pyc
+│   │   ├── snapshot.py
+│   │   ├── stddev.py
+│   │   └── _utils.py
+│   ├── ctrader_api
+│   │   ├── cenums.py
+│   │   ├── client.py
+│   │   ├── config.py
+│   │   ├── ctypes.py
+│   │   ├── execution.py
+│   │   ├── __init__.py
+│   │   └── __pycache__
+│   │       ├── client.cpython-311.pyc
+│   │       ├── client.cpython-313.pyc
+│   │       ├── config.cpython-311.pyc
+│   │       ├── config.cpython-313.pyc
+│   │       ├── ctypes.cpython-311.pyc
+│   │       ├── ctypes.cpython-313.pyc
+│   │       ├── execution.cpython-311.pyc
+│   │       ├── execution.cpython-313.pyc
+│   │       ├── __init__.cpython-311.pyc
+│   │       └── __init__.cpython-313.pyc
+│   ├── ctypes.py
+│   ├── __init__.py
+│   └── __pycache__
+│       ├── ctypes.cpython-311.pyc
+│       ├── ctypes.cpython-313.pyc
+│       ├── __init__.cpython-311.pyc
+│       └── __init__.cpython-313.pyc
 ├── design.txt
+├── main_fastapi.py
 ├── main.py
 ├── main_twisted.py
-├── main_fastapi.py
-├── basic.py
-└── requirements.txt
+├── Python.gitignore
+├── requirements.txt
+└── tree.txt
+
+16 directories, 85 files
