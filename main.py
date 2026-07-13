@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""cTrader app: connect, inspect account, optionally close all positions, then shutdown."""
+"""Trading app entry: csys connectivity + capp business loop."""
 
-import sys
-
-from twisted.internet import defer
-
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradeSide
-
-from ctrader_api import CTraderApp, CTraderOpenAPI, load_config
+from csys import load_config
+from capp import CTraderApp
 
 if __name__ == "__main__":
-    # close_on_start = "--close-all" in sys.argv
     config = load_config()
     app = CTraderApp(config)
     app.run()

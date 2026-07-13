@@ -1,27 +1,37 @@
 .
-├── basic.py
-├── ctrader_api
-│   ├── cenums.py
-│   ├── client.py
-│   ├── config.py
-│   ├── ctraderapp.py
-│   ├── ctypes.py
-│   ├── __init__.py
-│   └── __pycache__
-│       ├── cenums.cpython-311.pyc
-│       ├── client.cpython-311.pyc
-│       ├── client.cpython-313.pyc
-│       ├── config.cpython-311.pyc
-│       ├── config.cpython-313.pyc
-│       ├── ctraderapp.cpython-311.pyc
-│       ├── ctypes.cpython-311.pyc
-│       ├── __init__.cpython-311.pyc
-│       └── __init__.cpython-313.pyc
+├── capp/                    # BUSINESS LAYER (signals, strategies, app loop)
+│   ├── __init__.py
+│   ├── ctraderapp.py         # CTraderApp (was ctrader_api/ctraderapp.py)
+│   ├── csignals/
+│   │   ├── __init__.py
+│   │   ├── signals.py
+│   │   ├── stats.py
+│   │   └── types.py
+│   └── cstrategies/
+│       ├── __init__.py
+│       └── strategies.py
+├── csys/                    # SYSTEM LAYER (Open API, types, indicators)
+│   ├── __init__.py
+│   ├── ctypes.py            # facade → csys.ctrader_api.ctypes
+│   ├── ctrader_api/
+│   │   ├── __init__.py
+│   │   ├── client.py
+│   │   ├── config.py
+│   │   ├── ctypes.py
+│   │   ├── cenums.py
+│   │   └── execution.py
+│   └── cindicators/
+│       ├── __init__.py
+│       ├── _utils.py
+│       ├── adx.py
+│       ├── atr.py
+│       ├── ma.py
+│       ├── snapshot.py
+│       └── stddev.py
+├── code_references/
 ├── design.txt
-├── main_fastapi.py
 ├── main.py
 ├── main_twisted.py
-├── requirements.txt
-└── tree.txt
-
-3 directories, 22 files
+├── main_fastapi.py
+├── basic.py
+└── requirements.txt

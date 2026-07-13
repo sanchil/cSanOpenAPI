@@ -17,7 +17,7 @@ from .stddev import avg_std, stddev, stddev_of_ma
 from ._utils import DEFAULT_SERIES_CAPACITY, write_series
 
 if TYPE_CHECKING:
-    from ctrader_api.ctypes import IndData
+    from csys.ctypes import IndData
 
 # Periods matching IndData.ima* fields
 IMA_PERIODS: Sequence[int] = (5, 14, 30, 60, 120, 240, 500)

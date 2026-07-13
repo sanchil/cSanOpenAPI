@@ -5,7 +5,7 @@ Migrated from mq4 SanSignals / HSIG and cBot CSignal for the execution path
 described in design.txt. Used by ``cstrategies`` and ``CTraderApp``.
 """
 
-from ctrader_api.ctypes import DTYPE, SIG, T_SIG
+from csys.ctypes import DTYPE, SIG, T_SIG
 
 from .signals import (
     SanSignals,

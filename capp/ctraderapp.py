@@ -2,8 +2,9 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 import time
 
-from .client import CTraderOpenAPI
-from .ctypes import (
+# --- system layer (csys) ---
+from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
+from csys.ctypes import (
     DEFAULT_BAR_CAPACITY,
     IndData,
     SIG,
@@ -11,25 +12,29 @@ from .ctypes import (
     decode_trendbar,
     relative_to_price,
 )
-from .execution import OrderExecutor
+from csys.cindicators.snapshot import compute_indicators
 
-# Indicators computed once per cycle from the IndData OHLCV snapshot
-from cindicators.snapshot import compute_indicators
-# Signals + strategies (design.txt execution path)
-from csignals import SanSignals
-from cstrategies import CStrategies
+# --- business layer (capp) ---
+from capp.csignals import SanSignals
+from capp.cstrategies import CStrategies
 
 
 class CTraderApp:
     """
-    Application layer over CTraderOpenAPI.
+    Business-layer trading app (capp) over the system layer (csys).
+
+    Uses:
+      * csys.ctrader_api  — Open API client + OrderExecutor
+      * csys.ctypes      — IndData / SIG / T_SIG
+      * csys.cindicators — once-per-cycle indicator snapshot
+      * capp.csignals / capp.cstrategies — signals + strategies
 
     Startup call flow (after auth is ready):
-      1. ProtoOASubscribeSpotsReq      — live quotes
-      2. ProtoOASymbolsListReq         — symbol id → name map
-      3. ProtoOAGetTrendbarsReq        — seed IndData (OHLCV snapshot, count=500)
+      1. ProtoOASubscribeSpotsReq
+      2. ProtoOASymbolsListReq
+      3. ProtoOAGetTrendbarsReq (seed IndData)
       4. Reconcile open positions (OrderExecutor)
-      5. ProtoOASubscribeLiveTrendbarReq — official live bars on spots
+      5. ProtoOASubscribeLiveTrendbarReq
 
     Per bar cycle (once):
       compute_indicators → strategies.evaluate → OrderExecutor.handle_signal

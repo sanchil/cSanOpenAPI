@@ -17,7 +17,7 @@ import math
 from collections.abc import Sequence
 from typing import Union
 
-from ctrader_api.ctypes import DTYPE
+from csys.ctypes import DTYPE
 
 Series = Union[Sequence[float], list, tuple]
 

@@ -77,6 +77,27 @@ Take cues from code_references/mq4/code_base_v98.txt and code_references/cBot/Ph
 These contain a strategy that places one trade on each new bar as long as the signal holds for upto 15 trades at one time
 We will not do that and place only a single trade at a time
 
+TASK 3:
+
+Code Refactor: The overall objective and though process:
+
+The application is to be refactored and split into two layers. the functionality in csys is system later that performs low level functions
+such as connect to ctrader open api and fetch data and push back data in a standard and consistent manner. So all proto requests
+
+The layer capp should hold all the business logic and will keep getting updated as time goes and new feature are added.
+
+refactor the code as below
+ctrader_api, ctypes and cindicators belongs to -> csys
+csignals and cstrategies belongs to ->capp
+mv ctraderpp.py to -> capp
+
+
+
+
+
+
+
+
 
 
 

@@ -5,7 +5,7 @@ from twisted.internet import reactor, defer
 from twisted.web import server
 import json
 
-from ctrader_api import CTraderOpenAPI, load_config
+from csys import CTraderOpenAPI, load_config
 
 class CTraderApp:
     def __init__(self, config):
@@ -43,7 +43,7 @@ class OHLCVResource(Resource):
             reactor.callLater(timeout, timeout_d.errback, Exception(f"Request timeout after {timeout}s"))
 
             def on_success(response):
-                from ctrader_api.ctypes import decode_trendbar
+                from csys.ctypes import decode_trendbar
 
                 bars = getattr(response, 'trendbar', [])
                 print(f"✅ Received {len(bars)} bars")

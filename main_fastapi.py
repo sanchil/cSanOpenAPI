@@ -5,7 +5,7 @@ import uvicorn
 from multiprocessing import Process
 import time
 
-from ctrader_api import CTraderOpenAPI, load_config
+from csys import CTraderOpenAPI, load_config
 
 app = FastAPI(title="cTrader Data API")
 

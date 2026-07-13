@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ctrader_api.ctypes import IndData, SIG, T_SIG
-from csignals import SanSignals
+from csys.ctypes import IndData, SIG, T_SIG
+from capp.csignals import SanSignals
 
 
 class CStrategies:

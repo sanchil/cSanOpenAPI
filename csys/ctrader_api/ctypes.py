@@ -8,9 +8,9 @@ Single home for:
   - price/trendbar helpers used by the Open API layer
 
 Prefer:
-    from ctrader_api.ctypes import SIG, IndData, DTYPE, T_SIG
+    from csys.ctypes import SIG, IndData, DTYPE, T_SIG
 or:
-    from ctrader_api import SIG, IndData, DTYPE, T_SIG
+    from csys import SIG, IndData, DTYPE, T_SIG
 """
 
 from __future__ import annotations

@@ -1,4 +1,9 @@
-"""cTrader Open API Python interface."""
+"""
+csys.ctrader_api — Open API client, config, and order execution.
+
+System-layer only: connect, auth, proto requests, market data, orders.
+Business app loop lives in :mod:`capp.ctraderapp`.
+"""
 
 from .client import CTraderOpenAPI
 from .config import CTraderConfig, load_config
@@ -14,11 +19,7 @@ from .ctypes import (
 )
 from .execution import ExecutionResult, OpenPosition, OrderExecutor
 
-# CTraderApp is imported lazily — it pulls in cindicators/csignals/cstrategies,
-# which import ctypes and would cycle if loaded here eagerly.
-
 __all__ = [
-    "CTraderApp",
     "CTraderOpenAPI",
     "CTraderConfig",
     "load_config",
@@ -34,11 +35,3 @@ __all__ = [
     "OpenPosition",
     "ExecutionResult",
 ]
-
-
-def __getattr__(name: str):
-    if name == "CTraderApp":
-        from .ctraderapp import CTraderApp
-
-        return CTraderApp
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

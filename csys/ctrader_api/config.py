@@ -40,9 +40,13 @@ def _require(name: str) -> str:
 
 
 def load_config(env_path: str | Path | None = None) -> CTraderConfig:
-    """Load cTrader credentials from a .env file."""
+    """Load cTrader credentials from a .env file.
+
+    Default path: project root ``.env`` (csys/ctrader_api/config.py → ../../..).
+    """
     if env_path is None:
-        env_path = Path(__file__).resolve().parent.parent / ".env"
+        # csys/ctrader_api/config.py → project root
+        env_path = Path(__file__).resolve().parent.parent.parent / ".env"
     else:
         env_path = Path(env_path)
 

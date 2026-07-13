@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from ctrader_api.ctypes import IndData, SIG, T_SIG
+from csys.ctypes import IndData, SIG, T_SIG
 
 from .stats import mql_at, slope_val
 
