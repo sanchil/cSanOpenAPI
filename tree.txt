@@ -2,7 +2,14 @@
 ├── AGENTS.md
 ├── basic.py
 ├── capp
-│   ├── csignals
+│   ├── ctraderapp.py
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── ctraderapp.cpython-311.pyc
+│   │   ├── ctraderapp.cpython-313.pyc
+│   │   ├── __init__.cpython-311.pyc
+│   │   └── __init__.cpython-313.pyc
+│   ├── signals
 │   │   ├── __init__.py
 │   │   ├── __pycache__
 │   │   │   ├── __init__.cpython-311.pyc
@@ -12,23 +19,15 @@
 │   │   │   ├── stats.cpython-311.pyc
 │   │   │   └── stats.cpython-313.pyc
 │   │   ├── signals.py
-│   │   ├── stats.py
-│   │   └── types.py
-│   ├── cstrategies
-│   │   ├── __init__.py
-│   │   ├── __pycache__
-│   │   │   ├── __init__.cpython-311.pyc
-│   │   │   ├── __init__.cpython-313.pyc
-│   │   │   ├── strategies.cpython-311.pyc
-│   │   │   └── strategies.cpython-313.pyc
-│   │   └── strategies.py
-│   ├── ctraderapp.py
-│   ├── __init__.py
-│   └── __pycache__
-│       ├── ctraderapp.cpython-311.pyc
-│       ├── ctraderapp.cpython-313.pyc
-│       ├── __init__.cpython-311.pyc
-│       └── __init__.cpython-313.pyc
+│   │   └── stats.py
+│   └── strategies
+│       ├── __init__.py
+│       ├── __pycache__
+│       │   ├── __init__.cpython-311.pyc
+│       │   ├── __init__.cpython-313.pyc
+│       │   ├── strategies.cpython-311.pyc
+│       │   └── strategies.cpython-313.pyc
+│       └── strategies.py
 ├── code_references
 │   ├── cBot
 │   │   ├── Class.cs
@@ -100,4 +99,4 @@
 ├── requirements.txt
 └── tree.txt
 
-16 directories, 85 files
+16 directories, 84 files

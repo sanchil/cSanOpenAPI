@@ -92,6 +92,69 @@ csignals and cstrategies belongs to ->capp
 mv ctraderpp.py to -> capp
 
 
+TASK 4:
+
+
+Issues & Recommendations
+Here are the main points that need attention:
+1. Duplicate ctypes.py (Minor but Confusing)
+You now have ctypes.py in multiple places:
+
+csys/ctypes.py
+csys/ctrader_api/ctypes.py
+capp/csignals/types.py
+
+Recommendation:
+
+Keep the canonical definition in csys.ctrader_api.ctypes.
+Make csys/ctypes.py a pure re-export (facade), which you’ve already started doing.
+Consider removing capp/csignals/types.py and importing DTYPE, T_SIG, SIG from csys.ctypes instead (to avoid duplication).
+
+2. Import Organization in capp/ctraderapp.py
+The imports are a bit mixed:
+
+from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
+from csys.ctypes import ...
+from csys.cindicators.snapshot import compute_indicators
+
+from capp.csignals import SanSignals
+from capp.cstrategies import CStrategies
+
+Consider ->
+
+# System layer
+from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
+from csys.ctypes import ...
+from csys.cindicators.snapshot import compute_indicators
+
+# Application layer
+from capp.csignals import SanSignals
+from capp.cstrategies import CStrategies
+
+
+3. Inconsistent Package Naming
+You have:
+
+capp/csignals/
+capp/cstrategies/
+
+While the main modules are:
+
+capp/ctraderapp.py
+
+Recommendation: Consider renaming for consistency:
+
+capp/signals/ instead of capp/csignals/
+capp/strategies/ instead of capp/cstrategies/
+
+The c prefix feels unnecessary now that they’re already inside capp/.
+
+
+4. Minor Code Observations
+
+In ctraderapp.py, the run_signal_cycle method is quite long. Consider extracting the position state update logic into a small helper method.
+
+
 
 
 

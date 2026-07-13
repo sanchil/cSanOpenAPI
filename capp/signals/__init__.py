@@ -1,8 +1,8 @@
 """
-csignals — signal primitives and tactical signal bundle (T_SIG).
+capp.signals — signal primitives (SanSignals / init_sig path).
 
-Migrated from mq4 SanSignals / HSIG and cBot CSignal for the execution path
-described in design.txt. Used by ``cstrategies`` and ``CTraderApp``.
+Types (DTYPE, T_SIG, SIG) live in :mod:`csys.ctypes` — not duplicated here.
+Used by :mod:`capp.strategies` and :mod:`capp.ctraderapp`.
 """
 
 from csys.ctypes import DTYPE, SIG, T_SIG

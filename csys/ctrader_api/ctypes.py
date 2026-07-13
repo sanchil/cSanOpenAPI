@@ -100,7 +100,7 @@ class DTYPE:
 class T_SIG:
     """Tactical signal bundle for one IndData snapshot / cycle.
 
-    Populated once per bar by SanSignals.init_sig(); consumed by cstrategies.
+    Populated once per bar by SanSignals.init_sig(); consumed by capp.strategies.
     """
 
     # Core path from design.txt / HSIG::initSIG

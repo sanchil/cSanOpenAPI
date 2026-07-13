@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 import time
 
-# --- system layer (csys) ---
+# System layer
 from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
 from csys.ctypes import (
     DEFAULT_BAR_CAPACITY,
@@ -14,9 +14,9 @@ from csys.ctypes import (
 )
 from csys.cindicators.snapshot import compute_indicators
 
-# --- business layer (capp) ---
-from capp.csignals import SanSignals
-from capp.cstrategies import CStrategies
+# Application layer
+from capp.signals import SanSignals
+from capp.strategies import CStrategies
 
 
 class CTraderApp:
@@ -24,10 +24,10 @@ class CTraderApp:
     Business-layer trading app (capp) over the system layer (csys).
 
     Uses:
-      * csys.ctrader_api  — Open API client + OrderExecutor
-      * csys.ctypes      — IndData / SIG / T_SIG
-      * csys.cindicators — once-per-cycle indicator snapshot
-      * capp.csignals / capp.cstrategies — signals + strategies
+      * csys.ctrader_api   — Open API client + OrderExecutor
+      * csys.ctypes       — IndData / SIG / T_SIG
+      * csys.cindicators  — once-per-cycle indicator snapshot
+      * capp.signals / capp.strategies — signals + strategies
 
     Startup call flow (after auth is ready):
       1. ProtoOASubscribeSpotsReq
@@ -460,25 +460,36 @@ class CTraderApp:
             self.last_t_sig[sid] = t_sig
         self.last_trade_sig[sid] = trade_sig
 
-        # Reflect strategy signal; open side is tracked by executor
-        if not self.executor.has_position(sid):
-            data.trade_position = trade_sig if trade_sig in (SIG.BUY, SIG.SELL) else SIG.NOSIG
-            data.total_orders = 0
-        else:
-            data.trade_position = self.executor.position_side(sid)
-            data.total_orders = 1
+        self._sync_position_state(data, sid, trade_sig)
 
         if execute and self._hist_ready:
             self.executor.handle_signal(sid, trade_sig)
-            # Refresh local trade_position after action
-            if self.executor.has_position(sid):
-                data.trade_position = self.executor.position_side(sid)
-                data.total_orders = 1
-            elif trade_sig in (SIG.CLOSE,) or not self.executor.has_position(sid):
-                if not self.executor.has_position(sid):
-                    data.total_orders = 0
+            self._sync_position_state(data, sid, trade_sig)
 
         return trade_sig
+
+    def _sync_position_state(
+        self,
+        data: IndData,
+        symbol_id: int,
+        trade_sig: SIG,
+    ) -> None:
+        """Mirror executor open-position book onto IndData trading fields.
+
+        - Flat: trade_position reflects directional strategy sig (or NOSIG);
+          total_orders = 0.
+        - In trade: trade_position = open side; total_orders = 1.
+        """
+        if self.executor.has_position(symbol_id):
+            data.trade_position = self.executor.position_side(symbol_id)
+            data.total_orders = 1
+            return
+
+        data.total_orders = 0
+        if trade_sig in (SIG.BUY, SIG.SELL):
+            data.trade_position = trade_sig
+        else:
+            data.trade_position = SIG.NOSIG
 
     def _fire_on_bar_event(self):
         for handler in self.on_bar_handlers:

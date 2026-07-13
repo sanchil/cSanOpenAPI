@@ -1,7 +1,7 @@
 """
 Trading strategies — migrated from cBot CStrategies / mq4 SanStrategies.
 
-Each strategy consumes a once-per-cycle T_SIG snapshot from csignals and
+Each strategy consumes a once-per-cycle T_SIG snapshot from capp.signals and
 returns a single SIG (BUY / SELL / HOLD / CLOSE / NOSIG).
 
 CTraderApp calls ``evaluate(ind)`` once per bar after indicators + init_sig.
@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Optional
 
 from csys.ctypes import IndData, SIG, T_SIG
-from capp.csignals import SanSignals
+from capp.signals import SanSignals
 
 
 class CStrategies:

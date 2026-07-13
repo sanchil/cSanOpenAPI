@@ -1,5 +1,5 @@
 """
-cstrategies — strategy layer over csignals for CTraderApp.
+capp.strategies — strategy layer over capp.signals for CTraderApp.
 
 Migrated from cBot CStrategies / mq4 SanStrategies for the active execution path.
 """

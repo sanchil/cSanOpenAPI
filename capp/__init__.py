@@ -4,14 +4,16 @@ capp — application / business-logic layer.
 Holds strategies, signals, and the trading app loop. Depends on :mod:`csys`
 for connectivity, types, market data, and indicators.
 
-  capp.csignals      — SanSignals / T_SIG builders
-  capp.cstrategies   — Strategy_1..4
+  capp.signals      — SanSignals builders (types from csys.ctypes)
+  capp.strategies   — Strategy_1..4
   capp.ctraderapp    — CTraderApp orchestration
 """
 
+from csys.ctypes import DTYPE, T_SIG
+
 from capp.ctraderapp import CTraderApp
-from capp.csignals import SanSignals, T_SIG, DTYPE, fuse_sig, fast_slow_sig
-from capp.cstrategies import CStrategies
+from capp.signals import SanSignals, fast_slow_sig, fuse_sig
+from capp.strategies import CStrategies
 
 __all__ = [
     "CTraderApp",
