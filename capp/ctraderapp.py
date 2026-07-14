@@ -507,53 +507,69 @@ class CTraderApp:
         return compute_indicators(data)
 
     # ---------------------------------------------------------- position PnL
+    # Longer timeout: parallel races were timing out at 10s with (10, 'Deferred')
+    _PNL_TIMEOUT_S = 30
+
     def fetch_position_pnls(self) -> defer.Deferred:
         """
         Build Sequence[PositionPnL] for SanUtils (TASK 10).
 
-        Calls (both must finish before merge — DeferredList):
-          1. api.reconcile()            → open positions + label/symbol
-          2. api.get_unrealized_pnl()   → netUnrealizedPnL per positionId
+        Sequential finish-callback chain (dependent calls in order):
+          1. api.reconcile(timeout=30)          → open positions + label/symbol
+          2. api.get_unrealized_pnl(timeout=30) → netUnrealizedPnL per positionId
+          3. merge → list[PositionPnL]
 
-        dry_run / no network: empty list (avg profits = 0).
+        dry_run: empty list (avg profits = 0).
         """
         if self.executor.dry_run:
             return defer.succeed([])
 
-        d_rec = self.api.reconcile(client_msg_id="pnl_reconcile")
-        d_pnl = self.api.get_unrealized_pnl(client_msg_id="pnl_unrealized")
-        return defer.DeferredList(
-            [d_rec, d_pnl], consumeErrors=True
-        ).addCallback(self._merge_position_pnls)
+        d = self.api.reconcile(
+            client_msg_id="pnl_reconcile",
+            timeout=self._PNL_TIMEOUT_S,
+        )
+        d.addCallback(self._after_reconcile_fetch_pnl)
+        d.addErrback(self._on_reconcile_pnl_error)
+        return d
 
-    def _merge_position_pnls(self, results) -> List[PositionPnL]:
-        """Merge reconcile + unrealized PnL after both Deferreds complete."""
-        (ok_rec, rec_or_fail), (ok_pnl, pnl_or_fail) = results
-
-        if not ok_rec:
-            err = getattr(rec_or_fail, "getErrorMessage", lambda: str(rec_or_fail))()
-            print(f"⚠️  reconcile for PnL failed: {err}")
-            return []
-
-        rec = rec_or_fail
-        # Keep executor book aligned with broker
+    def _after_reconcile_fetch_pnl(self, rec) -> defer.Deferred:
+        """Only after reconcile succeeds, request unrealized PnL."""
         try:
             self.executor.sync_from_reconcile(rec)
         except Exception as e:
             print(f"⚠️  sync_from_reconcile: {e}")
 
+        d_pnl = self.api.get_unrealized_pnl(
+            client_msg_id="pnl_unrealized",
+            timeout=self._PNL_TIMEOUT_S,
+        )
+        d_pnl.addCallback(lambda pnl_res: self._build_position_pnls(rec, pnl_res))
+        d_pnl.addErrback(lambda fail: self._build_position_pnls(rec, None, fail))
+        return d_pnl
+
+    def _on_reconcile_pnl_error(self, failure) -> List[PositionPnL]:
+        print(f"⚠️  reconcile for PnL failed: {failure.getErrorMessage()}")
+        return []
+
+    def _build_position_pnls(
+        self,
+        rec,
+        pnl_res=None,
+        pnl_failure=None,
+    ) -> List[PositionPnL]:
+        """Merge reconcile positions with unrealized PnL (after both steps)."""
         unrealized: Dict[int, float] = {}
-        money_digits = 0
-        if ok_pnl:
-            pnl_res = pnl_or_fail
+        if pnl_failure is not None:
+            print(
+                f"⚠️  unrealized PnL failed: {pnl_failure.getErrorMessage()} "
+                f"— using 0 for net_profit"
+            )
+        elif pnl_res is not None:
             money_digits = int(getattr(pnl_res, "moneyDigits", 0) or 0)
             for u in getattr(pnl_res, "positionUnrealizedPnL", []) or []:
                 pid = int(getattr(u, "positionId", 0) or 0)
                 net_raw = getattr(u, "netUnrealizedPnL", 0) or 0
                 unrealized[pid] = scale_money(net_raw, money_digits)
-        else:
-            err = getattr(pnl_or_fail, "getErrorMessage", lambda: str(pnl_or_fail))()
-            print(f"⚠️  unrealized PnL failed: {err} — using 0 for net_profit")
 
         label_want = self.executor.label or ""
         out: List[PositionPnL] = []
@@ -569,7 +585,6 @@ class CTraderApp:
                 continue
             pid = int(getattr(pos, "positionId", 0) or 0)
             sid = int(getattr(trade, "symbolId", 0) or 0)
-            # Prefer Open API net unrealized (mark-to-market)
             net = float(unrealized.get(pid, 0.0))
             out.append(
                 PositionPnL(

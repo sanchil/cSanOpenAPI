@@ -199,8 +199,13 @@ class CTraderOpenAPI:
     def get_trader(self, client_msg_id: str | None = None) -> defer.Deferred:
         return self.send(ProtoOATraderReq(), client_msg_id)
 
-    def reconcile(self, client_msg_id: str | None = None) -> defer.Deferred:
-        return self.send(ProtoOAReconcileReq(), client_msg_id)
+    def reconcile(
+        self,
+        client_msg_id: str | None = None,
+        timeout: int = 30,
+    ) -> defer.Deferred:
+        """ProtoOAReconcileReq — open positions/orders. Default timeout 30s."""
+        return self.send(ProtoOAReconcileReq(), client_msg_id, timeout=timeout)
 
     def subscribe_spots(
         self,
@@ -438,13 +443,21 @@ class CTraderOpenAPI:
         request.dealId = int(deal_id)
         return self.send(request, client_msg_id)
 
-    def get_unrealized_pnl(self, client_msg_id: str | None = None) -> defer.Deferred:
+    def get_unrealized_pnl(
+        self,
+        client_msg_id: str | None = None,
+        timeout: int = 30,
+    ) -> defer.Deferred:
         """Fetch floating PnL for all open positions (ProtoOAGetPositionUnrealizedPnLReq).
 
         Response: positionUnrealizedPnL[] with gross/net + moneyDigits on the res.
-        Scale with :func:`scale_money`.
+        Scale with :func:`scale_money`. Default timeout 30s.
         """
-        return self.send(ProtoOAGetPositionUnrealizedPnLReq(), client_msg_id)
+        return self.send(
+            ProtoOAGetPositionUnrealizedPnLReq(),
+            client_msg_id,
+            timeout=timeout,
+        )
 
     def get_order_details(self, order_id: int, client_msg_id: str | None = None) -> defer.Deferred:
         request = ProtoOAOrderDetailsReq()
