@@ -282,6 +282,14 @@ _Period is a concept in Mq4 and should contain the number of minutes present in 
         }
 
 
+TASK 10 : depends on TASK 7:
+
+Let us wire in the SanUtils::get_total_trade_profits in capp/utils.py into CTraderApp. In order to calculate total trade profits
+CTraderApp needs to make calls to get a list or a sequence of postions being held.
+Feed the sequence of positions into
+
+First think about retrieving the sequence of positions. Detail out which calls will be made to client.py for this. Does it make sense for this
+positional seq call to be part of utils.py or CTraderApp?
 
 
 

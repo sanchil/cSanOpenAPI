@@ -52,6 +52,17 @@ MessageCallback = Callable[[Any], None]
 ErrorCallback = Callable[[Any], None]
 
 
+def scale_money(value: int | float, money_digits: int = 0) -> float:
+    """Convert Open API monetary protocol integers to real amounts.
+
+    E.g. moneyDigits=8 → real = value / 10^8.
+    """
+    digits = int(money_digits or 0)
+    if digits <= 0:
+        return float(value)
+    return float(value) / (10.0 ** digits)
+
+
 class CTraderOpenAPI:
     """Wrapper around the official ctrader-open-api SDK."""
 
@@ -428,6 +439,11 @@ class CTraderOpenAPI:
         return self.send(request, client_msg_id)
 
     def get_unrealized_pnl(self, client_msg_id: str | None = None) -> defer.Deferred:
+        """Fetch floating PnL for all open positions (ProtoOAGetPositionUnrealizedPnLReq).
+
+        Response: positionUnrealizedPnL[] with gross/net + moneyDigits on the res.
+        Scale with :func:`scale_money`.
+        """
         return self.send(ProtoOAGetPositionUnrealizedPnLReq(), client_msg_id)
 
     def get_order_details(self, order_id: int, client_msg_id: str | None = None) -> defer.Deferred:

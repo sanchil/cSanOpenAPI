@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 import time
+
+from twisted.internet import defer
 
 # System layer
 from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
+from csys.ctrader_api.client import scale_money
 from csys.ctypes import (
     DEFAULT_BAR_CAPACITY,
     IndData,
@@ -21,6 +24,7 @@ from csys.cindicators.snapshot import compute_indicators
 # Application layer
 from capp.signals import SanSignals
 from capp.strategies import CStrategies
+from capp.utils import PositionPnL, SanUtils
 
 
 class CTraderApp:
@@ -32,19 +36,14 @@ class CTraderApp:
       * csys.ctypes       — IndData / SIG / T_SIG
       * csys.cindicators  — once-per-cycle indicator snapshot
       * capp.signals / capp.strategies — signals + strategies
+      * capp.utils.SanUtils — avg floating PnL (TASK 10)
 
-    Startup call flow (after auth is ready):
-      1. ProtoOASubscribeSpotsReq
-      2. ProtoOASymbolsListReq
-      3. ProtoOAGetTrendbarsReq (seed IndData)
-      4. Reconcile open positions (OrderExecutor)
-      5. ProtoOASubscribeLiveTrendbarReq
-
-    Per bar cycle (once):
-      compute_indicators → strategies.evaluate → OrderExecutor.handle_signal
-
-    TASK 2 execution policy: single market trade per symbol, no SL/TP,
-    close on CLOSE or opposite signal, never pyramid.
+    Per bar cycle (once, live):
+      compute_indicators
+        → fetch_position_pnls (reconcile + unrealized PnL; finish-callback)
+        → SanUtils.get_total_trade_profits
+        → strategies.evaluate
+        → OrderExecutor.handle_signal
     """
 
     def __init__(
@@ -85,6 +84,7 @@ class CTraderApp:
         self.strategies = CStrategies(self.signals, active=active_strategy)
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
+        self.last_total_trade_profits: float = 0.0
 
         # TASK 2: single-trade order execution (no SL/TP, no pyramid)
         self.executor = OrderExecutor(
@@ -94,6 +94,8 @@ class CTraderApp:
             dry_run=dry_run,
             enabled=trading_enabled,
         )
+        # TASK 7/10: pure PnL average; cTrader filter = label
+        self.utils = SanUtils(default_label=trade_label)
 
         self.on_bar_handlers = []
 
@@ -434,21 +436,8 @@ class CTraderApp:
             data.append_decoded_bar(decoded)
             self._last_live_bar_minutes[symbol_id] = minutes
 
-            # Once per bar cycle: indicators → signals → strategy
-            trade_sig = self.run_signal_cycle(data, symbol_id)
-
-            symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
-            if len(data.close) >= 2:
-                # Print the completed bar (second-to-last)
-                print(
-                    f"New bar closed [{symbol_name}] "
-                    f"O={data.open[-2]:.5f} H={data.high[-2]:.5f} "
-                    f"L={data.low[-2]:.5f} C={data.close[-2]:.5f} "
-                    f"V={data.tick_volume[-2]:.0f} "
-                    f"ATR={data.atr[-1] if data.atr else float('nan'):.5f} "
-                    f"ADX={data.adx[-1] if data.adx else float('nan'):.2f} "
-                    f"SIG={trade_sig}"
-                )
+            # Live cycle is async (PnL fetch first); logging happens in finish
+            self.run_signal_cycle(data, symbol_id, execute=True, log_bar=True)
             self._fire_on_bar_event()
 
     # --------------------------------------------- synthetic bar path (fallback)
@@ -498,14 +487,8 @@ class CTraderApp:
                 ).replace(tzinfo=None),
             )
 
-            # Once per bar cycle
-            trade_sig = self.run_signal_cycle(data, symbol_id)
-
-            symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
-            print(
-                f"New bar closed [{symbol_name}] "
-                f"O={bar['open']:.5f} C={bar['close']:.5f} "
-                f"SIG={trade_sig} (synthetic)"
+            self.run_signal_cycle(
+                data, symbol_id, execute=True, log_bar=True, log_tag="synthetic"
             )
 
             self.current_bar[symbol_id] = {
@@ -520,12 +503,84 @@ class CTraderApp:
             self._fire_on_bar_event()
 
     def refresh_indicators(self, data: IndData) -> IndData:
-        """Recompute indicator snapshot once for this IndData (per cycle).
-
-        Fills ima*, atr, adx/di+/di-, std_close/std_open/avg_std from the
-        current OHLCV window. Safe to call after history load or bar close.
-        """
+        """Recompute indicator snapshot once for this IndData (per cycle)."""
         return compute_indicators(data)
+
+    # ---------------------------------------------------------- position PnL
+    def fetch_position_pnls(self) -> defer.Deferred:
+        """
+        Build Sequence[PositionPnL] for SanUtils (TASK 10).
+
+        Calls (both must finish before merge — DeferredList):
+          1. api.reconcile()            → open positions + label/symbol
+          2. api.get_unrealized_pnl()   → netUnrealizedPnL per positionId
+
+        dry_run / no network: empty list (avg profits = 0).
+        """
+        if self.executor.dry_run:
+            return defer.succeed([])
+
+        d_rec = self.api.reconcile(client_msg_id="pnl_reconcile")
+        d_pnl = self.api.get_unrealized_pnl(client_msg_id="pnl_unrealized")
+        return defer.DeferredList(
+            [d_rec, d_pnl], consumeErrors=True
+        ).addCallback(self._merge_position_pnls)
+
+    def _merge_position_pnls(self, results) -> List[PositionPnL]:
+        """Merge reconcile + unrealized PnL after both Deferreds complete."""
+        (ok_rec, rec_or_fail), (ok_pnl, pnl_or_fail) = results
+
+        if not ok_rec:
+            err = getattr(rec_or_fail, "getErrorMessage", lambda: str(rec_or_fail))()
+            print(f"⚠️  reconcile for PnL failed: {err}")
+            return []
+
+        rec = rec_or_fail
+        # Keep executor book aligned with broker
+        try:
+            self.executor.sync_from_reconcile(rec)
+        except Exception as e:
+            print(f"⚠️  sync_from_reconcile: {e}")
+
+        unrealized: Dict[int, float] = {}
+        money_digits = 0
+        if ok_pnl:
+            pnl_res = pnl_or_fail
+            money_digits = int(getattr(pnl_res, "moneyDigits", 0) or 0)
+            for u in getattr(pnl_res, "positionUnrealizedPnL", []) or []:
+                pid = int(getattr(u, "positionId", 0) or 0)
+                net_raw = getattr(u, "netUnrealizedPnL", 0) or 0
+                unrealized[pid] = scale_money(net_raw, money_digits)
+        else:
+            err = getattr(pnl_or_fail, "getErrorMessage", lambda: str(pnl_or_fail))()
+            print(f"⚠️  unrealized PnL failed: {err} — using 0 for net_profit")
+
+        label_want = self.executor.label or ""
+        out: List[PositionPnL] = []
+        for pos in getattr(rec, "position", []) or []:
+            status = getattr(pos, "positionStatus", 1)
+            if status == 2:  # POSITION_STATUS_CLOSED
+                continue
+            trade = getattr(pos, "tradeData", None)
+            if trade is None:
+                continue
+            lbl = str(getattr(trade, "label", "") or "")
+            if label_want and lbl != label_want:
+                continue
+            pid = int(getattr(pos, "positionId", 0) or 0)
+            sid = int(getattr(trade, "symbolId", 0) or 0)
+            # Prefer Open API net unrealized (mark-to-market)
+            net = float(unrealized.get(pid, 0.0))
+            out.append(
+                PositionPnL(
+                    net_profit=net,
+                    symbol_id=sid,
+                    label=lbl,
+                    position_id=pid,
+                    is_open=True,
+                )
+            )
+        return out
 
     def run_signal_cycle(
         self,
@@ -534,21 +589,98 @@ class CTraderApp:
         *,
         total_trade_profits: float = 0.0,
         execute: bool = True,
-    ) -> SIG:
+        log_bar: bool = False,
+        log_tag: str = "",
+    ) -> Union[SIG, defer.Deferred]:
         """
-        Once-per-cycle pipeline (design.txt TASK 1 + TASK 2):
+        Once-per-cycle pipeline (TASK 1 + 2 + 10):
 
-          1. compute_indicators(ind)        — MA/ATR/ADX/StdDev snapshot
-          2. strategies.evaluate(ind)       — init_sig → Strategy_N → trade SIG
-          3. executor.handle_signal(...)    — single market trade / close
+          1. compute_indicators
+          2. [live] fetch_position_pnls → SanUtils.get_total_trade_profits
+          3. strategies.evaluate(..., total_trade_profits)
+          4. executor.handle_signal
 
-        Within the cycle, read T_SIG / strategy SIG from last_* maps; do not
-        re-run indicators or signals repeatedly for the same bar.
-
-        Set execute=False for historical seed (signals only, no orders).
+        Live path waits for reconcile + unrealized PnL (finish-callback) before
+        strategy/execution. Seed path (execute=False) skips PnL and is sync.
         """
         self.refresh_indicators(data)
         sid = symbol_id if symbol_id is not None else data.symbol_id
+        need_live = bool(execute and self._hist_ready)
+
+        if not need_live:
+            return self._finish_signal_cycle(
+                data,
+                sid,
+                total_trade_profits=total_trade_profits,
+                execute=False,
+                log_bar=log_bar,
+                log_tag=log_tag,
+            )
+
+        # Dependent calls must complete before strategy (finish-callback pattern)
+        d = self.fetch_position_pnls()
+        d.addCallback(
+            self._on_position_pnls_ready, data, sid, log_bar, log_tag
+        )
+        d.addErrback(
+            self._on_position_pnls_error, data, sid, log_bar, log_tag
+        )
+        return d
+
+    def _on_position_pnls_ready(
+        self,
+        pnls: List[PositionPnL],
+        data: IndData,
+        sid: int,
+        log_bar: bool,
+        log_tag: str,
+    ) -> SIG:
+        avg = self.utils.get_total_trade_profits(
+            pnls, label=self.executor.label
+        )
+        self.last_total_trade_profits = avg
+        return self._finish_signal_cycle(
+            data,
+            sid,
+            total_trade_profits=avg,
+            execute=True,
+            log_bar=log_bar,
+            log_tag=log_tag,
+        )
+
+    def _on_position_pnls_error(
+        self,
+        failure,
+        data: IndData,
+        sid: int,
+        log_bar: bool,
+        log_tag: str,
+    ) -> SIG:
+        print(
+            f"⚠️  position PnL chain failed: {failure.getErrorMessage()} "
+            f"— using total_trade_profits=0"
+        )
+        self.last_total_trade_profits = 0.0
+        return self._finish_signal_cycle(
+            data,
+            sid,
+            total_trade_profits=0.0,
+            execute=True,
+            log_bar=log_bar,
+            log_tag=log_tag,
+        )
+
+    def _finish_signal_cycle(
+        self,
+        data: IndData,
+        sid: int,
+        *,
+        total_trade_profits: float,
+        execute: bool,
+        log_bar: bool = False,
+        log_tag: str = "",
+    ) -> SIG:
+        """Strategy + optional order after indicators (and PnL if live) are ready."""
         trade_sig = self.strategies.evaluate(
             data,
             total_trade_profits=total_trade_profits,
@@ -557,6 +689,7 @@ class CTraderApp:
         if t_sig is not None:
             self.last_t_sig[sid] = t_sig
         self.last_trade_sig[sid] = trade_sig
+        self.last_total_trade_profits = float(total_trade_profits)
 
         self._sync_position_state(data, sid, trade_sig)
 
@@ -564,7 +697,36 @@ class CTraderApp:
             self.executor.handle_signal(sid, trade_sig)
             self._sync_position_state(data, sid, trade_sig)
 
+        if log_bar:
+            self._log_cycle_result(data, sid, trade_sig, total_trade_profits, log_tag)
+
         return trade_sig
+
+    def _log_cycle_result(
+        self,
+        data: IndData,
+        sid: int,
+        trade_sig: SIG,
+        avg_pnl: float,
+        log_tag: str,
+    ) -> None:
+        symbol_name = self.symbol_map.get(sid, f"ID_{sid}")
+        tag = f" ({log_tag})" if log_tag else ""
+        if len(data.close) >= 2:
+            print(
+                f"New bar closed [{symbol_name}] "
+                f"O={data.open[-2]:.5f} H={data.high[-2]:.5f} "
+                f"L={data.low[-2]:.5f} C={data.close[-2]:.5f} "
+                f"V={data.tick_volume[-2]:.0f} "
+                f"ATR={data.atr[-1] if data.atr else float('nan'):.5f} "
+                f"ADX={data.adx[-1] if data.adx else float('nan'):.2f} "
+                f"avgPnL={avg_pnl:.2f} SIG={trade_sig}{tag}"
+            )
+        else:
+            print(
+                f"Signal [{symbol_name}] avgPnL={avg_pnl:.2f} "
+                f"SIG={trade_sig}{tag}"
+            )
 
     def _sync_position_state(
         self,
@@ -572,12 +734,7 @@ class CTraderApp:
         symbol_id: int,
         trade_sig: SIG,
     ) -> None:
-        """Mirror executor open-position book onto IndData trading fields.
-
-        - Flat: trade_position reflects directional strategy sig (or NOSIG);
-          total_orders = 0.
-        - In trade: trade_position = open side; total_orders = 1.
-        """
+        """Mirror executor open-position book onto IndData trading fields."""
         if self.executor.has_position(symbol_id):
             data.trade_position = self.executor.position_side(symbol_id)
             data.total_orders = 1
@@ -592,7 +749,7 @@ class CTraderApp:
     def _fire_on_bar_event(self):
         for handler in self.on_bar_handlers:
             try:
-                handler(self.hist_bars)  # Pass the whole dict of IndData
+                handler(self.hist_bars)
             except Exception as e:
                 print(f"Error in on_bar handler: {e}")
 

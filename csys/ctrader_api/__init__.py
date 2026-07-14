@@ -5,7 +5,7 @@ System-layer only: connect, auth, proto requests, market data, orders.
 Business app loop lives in :mod:`capp.ctraderapp`.
 """
 
-from .client import CTraderOpenAPI
+from .client import CTraderOpenAPI, scale_money
 from .config import CTraderConfig, load_config
 from .ctypes import (
     DEFAULT_BAR_CAPACITY,
@@ -27,6 +27,7 @@ from .execution import ExecutionResult, OpenPosition, OrderExecutor
 
 __all__ = [
     "CTraderOpenAPI",
+    "scale_money",
     "CTraderConfig",
     "load_config",
     "IndData",

@@ -2,8 +2,9 @@
 SanUtils — application helpers (mq4 SanUtils subset).
 
 TASK 7: average floating trade profit for strategy profit-close gates.
-Not wired into CTraderApp / strategies yet — call sites will pass the result
-as ``total_trade_profits`` later.
+TASK 10: wired from CTraderApp via a sequence of PositionPnL (no network here).
+
+Magic number is optional (mq4-only). cTrader uses position **label**.
 """
 
 from __future__ import annotations
@@ -18,12 +19,12 @@ class PositionPnL:
     """Minimal open-position snapshot for PnL averaging.
 
     ``net_profit`` = floating P&amp;L in account currency
-    (gross + swap + commission in mq4; NetProfit in cBot).
+    (Open API netUnrealizedPnL, or mq4 profit+swap+commission).
     """
 
     net_profit: float
     symbol_id: Union[int, str] = 0
-    magic_number: Optional[Union[int, str]] = None
+    magic_number: Optional[Union[int, str]] = None  # mq4 optional; unused in cTrader
     label: str = ""
     position_id: int = 0
     is_open: bool = True
@@ -55,64 +56,49 @@ def _as_position_pnl(item: Any) -> PositionPnL:
     )
 
 
-def _matches_identity(
+def _matches_filters(
     pos: PositionPnL,
-    magic: Optional[Union[int, str]],
+    *,
     label: Optional[str],
+    magic: Optional[Union[int, str]],
 ) -> bool:
-    """True if position matches magic and/or label filters (when provided)."""
-    if magic is None and not label:
-        return True
+    """cTrader: filter by label when set. Magic is optional mq4 legacy only."""
+    # Label wins (cTrader path)
+    if label is not None and label != "":
+        return pos.label == label
 
-    magic_str = str(magic) if magic is not None else None
-    label_filter = label if label else None
-
-    # cBot: magic often stored as Label string
-    if label_filter is not None:
-        if pos.label == label_filter:
-            return True
-        if pos.magic_number is not None and str(pos.magic_number) == label_filter:
-            return True
-        if magic_str is not None and pos.label == magic_str:
-            return True
-        # Explicit label required but not matched
-        if pos.label or pos.magic_number is not None:
-            return False
-        return False
-
-    # Numeric / string magic only
-    if magic_str is not None:
+    # Optional magic filter (mq4); never required
+    if magic is not None:
+        magic_str = str(magic)
         if pos.magic_number is not None and str(pos.magic_number) == magic_str:
             return True
-        if pos.label and pos.label == magic_str:
-            return True
-        # Position carries no identity — include only if no filter was meaningful
-        if pos.magic_number is None and not pos.label:
+        if pos.label == magic_str:
             return True
         return False
 
-    return True
+    return True  # no filter → include all open
 
 
 class SanUtils:
     """
-    Application utilities ported from mq4 ``SanUtils``.
+    Pure helpers — no Open API / network.
 
-    Primary TASK 7 API:
-      get_total_trade_profits(...) → average floating PnL of held trades
+    Primary API:
+      get_total_trade_profits(positions) → mean floating PnL of open trades
 
-    design.txt (multi-asset average):
-      3 USDJPY + 4 EURUSD open →
-        avg = sum(net_profit of all 7) / 7
+    design.txt multi-asset average:
+      3 USDJPY + 4 EURUSD → sum(profits) / 7
 
-    Strategy profit-close gates (Strategy_2/3/4) use this as
-    ``total_trade_profits >= threshold``.
-
-    Note: mq4 divided by OrdersTotal() (all account orders). This port divides
-    by the **count of matching open positions** only.
+    cTrader: pass ``label=`` (e.g. GrokApp). Magic is optional mq4-only.
     """
 
-    def __init__(self, default_magic: Optional[Union[int, str]] = None) -> None:
+    def __init__(
+        self,
+        default_label: Optional[str] = None,
+        default_magic: Optional[Union[int, str]] = None,
+    ) -> None:
+        self.default_label = default_label
+        # mq4 only — optional, not used by cTrader Open API
         self.default_magic = default_magic
 
     def get_total_trade_profits(
@@ -130,26 +116,21 @@ class SanUtils:
         Parameters
         ----------
         positions :
-            Iterable of PositionPnL, dicts, or objects with net_profit /
-            symbol_id / magic_number / label.
+            Sequence of PositionPnL (or dicts / duck-types).
         magic_number :
-            Filter by magic (mq4) or label string (cBot). None → use
-            ``default_magic`` if set; else no magic filter.
-        symbol_id :
-            Used only when ``all_symbols=False`` (mq4 per-chart ``_Symbol``).
+            Optional mq4 magic filter. Ignored when ``label`` is set.
+            cTrader has no magic — prefer label.
         label :
-            Optional explicit cTrader label filter.
-        all_symbols :
-            True (default): average across every matching open trade on
-            all symbols (design.txt multi-asset example).
-            False: only ``symbol_id`` (required).
-
-        Returns
-        -------
-        float
-            mean net_profit of matching open positions, or 0.0 if none.
+            cTrader position label filter (preferred).
+        symbol_id / all_symbols :
+            Per-symbol vs multi-asset average (default multi-asset).
         """
-        magic = magic_number if magic_number is not None else self.default_magic
+        use_label = label if label is not None else self.default_label
+        use_magic = None
+        if use_label is None or use_label == "":
+            use_magic = (
+                magic_number if magic_number is not None else self.default_magic
+            )
 
         if not all_symbols and symbol_id is None:
             raise ValueError(
@@ -158,16 +139,14 @@ class SanUtils:
 
         total = 0.0
         count = 0
-
         for raw in positions:
             pos = _as_position_pnl(raw)
             if not pos.is_open:
                 continue
-            if not _matches_identity(pos, magic, label):
+            if not _matches_filters(pos, label=use_label, magic=use_magic):
                 continue
             if not all_symbols and pos.symbol_id != symbol_id:
                 continue
-
             total += float(pos.net_profit)
             count += 1
 
@@ -175,7 +154,6 @@ class SanUtils:
             return 0.0
         return total / float(count)
 
-    # mq4 / camelCase alias
     getTotalTradeProfits = get_total_trade_profits
 
     def get_symbol_trade_profits(
@@ -186,7 +164,7 @@ class SanUtils:
         *,
         label: Optional[str] = None,
     ) -> float:
-        """Average floating PnL for one symbol only (mq4 ``_Symbol`` scope)."""
+        """Average floating PnL for one symbol only."""
         return self.get_total_trade_profits(
             positions,
             magic_number=magic_number,
