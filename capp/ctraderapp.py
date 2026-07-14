@@ -8,9 +8,13 @@ from csys.ctypes import (
     DEFAULT_BAR_CAPACITY,
     IndData,
     SIG,
+    SymbolMeta,
     T_SIG,
+    apply_symbol_meta,
     decode_trendbar,
+    period_seconds,
     relative_to_price,
+    symbol_meta_from_proto,
 )
 from csys.cindicators.snapshot import compute_indicators
 
@@ -60,9 +64,13 @@ class CTraderApp:
         # Per-symbol historical data: Dict[symbol_id, IndData]
         self.hist_bars: Dict[int, IndData] = {}
 
-        self.symbol_map: Dict[int, str] = {}
+        self.symbol_map: Dict[int, str] = {}  # id → name (light list)
+        # Full symbol meta from ProtoOASymbolById (digits, pip_size, point, …)
+        self.symbol_meta: Dict[int, SymbolMeta] = {}
+        # Convenience map: symbol_id → digits (always available after meta load)
+        self.symbol_digits: Dict[int, int] = {}
         self.current_bar: Dict[int, dict] = {}
-        self.bar_interval = 60  # seconds; matches M1
+        self.bar_interval = 60  # seconds between synthetic bars (M1)
         self.bar_period = "M1"
         self.bar_count = DEFAULT_BAR_CAPACITY
         self.last_bar_time: Optional[float] = None
@@ -113,7 +121,64 @@ class CTraderApp:
             self.symbol_map[symbol.symbolId] = symbol.symbolName
         print(f"✅ Loaded {len(self.symbol_map)} symbols")
 
-        # Step 3: Seed IndData from historical trendbars
+        # Step 3: full ProtoOASymbol for watched ids → digits / pip_size / point
+        d = self.api.get_symbols_by_id(
+            self.fxpair_arr,
+            client_msg_id="symbols_by_id",
+        )
+        d.addCallback(self.on_symbol_details_received)
+        d.addErrback(self.on_symbol_details_error)
+
+    def on_symbol_details_received(self, response):
+        """Cache symbol_id → SymbolMeta (digits, pipPosition → pip_size)."""
+        full_symbols = list(getattr(response, "symbol", []) or [])
+        for sym in full_symbols:
+            sid = int(getattr(sym, "symbolId", 0) or 0)
+            name = self.symbol_map.get(sid, "")
+            meta = symbol_meta_from_proto(sym, name=name)
+            self.symbol_meta[sid] = meta
+            self.symbol_digits[sid] = meta.digits
+            print(
+                f"   symbol {sid} {meta.name or '?'}: "
+                f"digits={meta.digits} pipPos={meta.pip_position} "
+                f"pip_size={meta.pip_size} point={meta.point}"
+            )
+
+        # Fallback meta for any watched id missing from response
+        for sid in self.fxpair_arr:
+            if sid not in self.symbol_meta:
+                name = self.symbol_map.get(sid, f"ID_{sid}")
+                print(f"⚠️  No ProtoOASymbol detail for {sid} ({name}) — using FX5 defaults")
+                self.symbol_meta[sid] = SymbolMeta(
+                    symbol_id=sid,
+                    name=name,
+                    digits=5,
+                    pip_position=4,
+                    pip_size=0.0001,
+                    point=0.00001,
+                )
+                self.symbol_digits[sid] = 5
+
+        print(f"✅ Symbol meta cached for {len(self.symbol_meta)} ids")
+        # Step 4: Seed IndData from historical trendbars
+        self.init_ind_data()
+
+    def on_symbol_details_error(self, failure):
+        print(
+            f"⚠️  SymbolById failed: {failure.getErrorMessage()} "
+            f"— using default pip_size=0.0001 for watched symbols"
+        )
+        for sid in self.fxpair_arr:
+            name = self.symbol_map.get(sid, f"ID_{sid}")
+            self.symbol_meta[sid] = SymbolMeta(
+                symbol_id=sid,
+                name=name,
+                digits=5,
+                pip_position=4,
+                pip_size=0.0001,
+                point=0.00001,
+            )
+            self.symbol_digits[sid] = 5
         self.init_ind_data()
 
     def on_subscription_error(self, failure):
@@ -124,23 +189,50 @@ class CTraderApp:
 
     # ---------------------------------------------------------- historical seed
     def init_ind_data(self):
-        """Populate IndData for each watched symbol via ProtoOAGetTrendbarsReq.
+        """Populate IndData for each watched symbol (PhyBot.InitIndData parity).
 
-        Uses count=bar_count (default 500) so we request exactly the snapshot
-        size IndData can hold, avoiding oversized ranges / INCORRECT_BOUNDARIES.
+        From Open API ProtoOASymbol (via symbol_meta cache):
+          pip_size  ← 10^(-pipPosition)   ~ Symbol.PipSize
+          point     ← 10^(-digits)        ~ Symbol.TickSize
+          digits    ← ProtoOASymbol.digits
+          pip_value ← approx lot*pip_size ~ Symbol.PipValue
+          dbl_epsilon ← point * 0.1
+          period / current_period ← timeframe seconds (M1 → 60)
+
+        Then loads historical trendbars into OHLCV deques.
         """
         self._hist_pending = len(self.fxpair_arr)
         self._hist_ready = False
+        # design.txt: M1 _Period = 60 seconds; bar_interval matches for synthetic clock
+        period_secs = period_seconds(self.bar_period)
+        self.bar_interval = period_secs
 
         for symbol_id in self.fxpair_arr:
             data = IndData(capacity=self.bar_count)
-            data.symbol_id = symbol_id
-            data.symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
-            data.period = self.bar_interval
-            data.shift = 1  # MQL closed-bar default for signals
-            if not data.pip_size:
+            meta = self.symbol_meta.get(symbol_id)
+            if meta is not None:
+                apply_symbol_meta(data, meta, period_secs=period_secs)
+            else:
+                data.symbol_id = symbol_id
+                data.symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
                 data.pip_size = 0.0001
+                data.pip_value = 0.0
+                data.point = 0.00001
+                data.digits = 5
+                data.pip_position = 4
+                data.dbl_epsilon = data.point * 0.1
+                data.period = period_secs
+                data.current_period = float(period_secs)
+                data.bars_held = 0
+            data.shift = 1  # closed-bar analysis (signals); PhyBot uses 0 for live series
+            data.total_orders = 0
             self.hist_bars[symbol_id] = data
+            print(
+                f"   IndData[{data.symbol_name or symbol_id}]: "
+                f"digits={data.digits} pip_size={data.pip_size} "
+                f"point={data.point} pip_value={data.pip_value} "
+                f"period={data.period}s"
+            )
 
             d = self.api.get_trendbars(
                 symbol_id=symbol_id,
@@ -157,7 +249,9 @@ class CTraderApp:
         data = self.hist_bars[symbol_id]
 
         # Decode ProtoOATrendbar delta encoding → absolute OHLCV
-        decoded = [decode_trendbar(bar) for bar in raw_bars]
+        # Round to symbol digits when known (from symbol_digits map / IndData)
+        digits = self.symbol_digits.get(symbol_id, getattr(data, "digits", None))
+        decoded = [decode_trendbar(bar, digits=digits) for bar in raw_bars]
         # Sort oldest → newest by bar open time (API usually already does this)
         decoded.sort(key=lambda b: b["utc_minutes"])
 
@@ -210,6 +304,10 @@ class CTraderApp:
     def _on_positions_synced(self, positions):
         n = len(positions) if positions is not None else 0
         print(f"✅ Position book synced ({n} open under label={self.executor.label})")
+        # PhyBot: TotalOrders = positions with our label
+        for sid in self.hist_bars:
+            self.hist_bars[sid].total_orders = 0
+            self.hist_bars[sid].trade_position = SIG.NOSIG
         for sid, pos in (positions or {}).items():
             name = self.symbol_map.get(sid, sid)
             print(f"   {name}: {pos.side.name} vol={pos.volume} id={pos.position_id}")

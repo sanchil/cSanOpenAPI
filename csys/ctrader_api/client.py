@@ -31,6 +31,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAReconcileReq,
     ProtoOASubscribeLiveTrendbarReq,
     ProtoOASubscribeSpotsReq,
+    ProtoOASymbolByIdReq,
     ProtoOASymbolCategoryListReq,
     ProtoOASymbolsListReq,
     ProtoOATraderReq,
@@ -168,6 +169,20 @@ class CTraderOpenAPI:
     def get_symbols(self, include_archived: bool = False, client_msg_id: str | None = None) -> defer.Deferred:
         request = ProtoOASymbolsListReq()
         request.includeArchivedSymbols = include_archived
+        return self.send(request, client_msg_id)
+
+    def get_symbols_by_id(
+        self,
+        symbol_ids: list[int] | int,
+        client_msg_id: str | None = None,
+    ) -> defer.Deferred:
+        """Fetch full ProtoOASymbol details (digits, pipPosition, lotSize, …).
+
+        Light list from get_symbols() has names only; use this for pip/point meta.
+        """
+        request = ProtoOASymbolByIdReq()
+        ids = [symbol_ids] if isinstance(symbol_ids, int) else list(symbol_ids)
+        request.symbolId.extend(int(sid) for sid in ids)
         return self.send(request, client_msg_id)
 
     def get_trader(self, client_msg_id: str | None = None) -> defer.Deferred:

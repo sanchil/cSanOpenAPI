@@ -155,6 +155,139 @@ The c prefix feels unnecessary now that they’re already inside capp/.
 In ctraderapp.py, the run_signal_cycle method is quite long. Consider extracting the position state update logic into a small helper method.
 
 
+TASK 5:
+
+Techincally this task is part of /plan command.
+Do nothing other than learn and form a base objective
+
+Dive deep into codebase of code_references/mq4 and code_references/cBot
+Absorb core design idea and objectives especially from code_references/mq4.
+The code was migrated from  code_references/mq4 to code_references/cBot
+code_references/mq4 contains a lot of bloat. however we need only a strategies encompassed in HSIG::iniSIG and the one or two baseSlopeSIG and slope30SIG, fsig and fastSIG
+based strategies from here. The rest of the flows may be ignored
+
+TASK 6:
+
+As an learning extension of TASK 5: Pay close attention to class MarketMetrics in code_references/mq4/code_base_v98.txt. This class encopasses units and measures and
+building blocks for signals and signal generation. Read and learn this class for now.
+Do nothing
+
+TASK 7:
+
+total_trade_profits = The current total trade profits currently held.
+For eg if 3 trades of usdjpy and 4 trades of eurusd are being held then the total avg trade profit is profits of ((3 usdjpy + 4 eurusd separate)/7).
+The strategy checks if the avg trade profit of all assets is above a specific threshold then it closes the trade to capture profits
+
+You will find something like so from code_references/mq4/code_base_v98.txt
+
+//+------------------------------------------------------------------+
+//| Calculates the total floating PnL for the current symbol         |
+//+------------------------------------------------------------------+
+double SanUtils::getTotalTradeProfits(const ulong magicNumber) {
+   int totalOrders = OrdersTotal();
+   double totalProfit = 0.0;
+
+// Loop backwards to prevent skipped indices
+   for(int i = totalOrders - 1; i >= 0; i--) {
+      if(
+         OrderSelect(i, SELECT_BY_POS, MODE_TRADES)
+         &&(OrderMagicNumber() == magicNumber)
+      ) {
+
+         // Filter by symbol (ignoring magic number for now as requested)
+         if(OrderSymbol() == _Symbol) {
+
+            // Only count active Buy and Sell positions (ignore pending orders)
+            if(OrderType() == OP_BUY || OrderType() == OP_SELL) {
+
+               // Sum up net profit: Gross Profit + Swaps + Commissions
+               totalProfit += (OrderProfit() + OrderSwap() + OrderCommission());
+            }
+         }
+      }
+   }
+
+//return NormalizeDouble(totalProfit,2);
+   return (totalOrders>0)?(totalProfit/(double)totalOrders):0.0;
+}
+
+
+This should belong to a SanUtils class in capp/utils.py.
+
+Create the class and function but do not wire it in for now.
+
+TASK 8:
+
+Inside capp/utils.py Keep the magic number optional. magic number is an mq4 concept and does not exist in cTrader.
+ensure
+
+TASK 9:
+
+Following is an example of IndData getting initialized in PhyBot.cs.
+For full reference code_references/cBot/PhyBot.cs
+
+Points to note, all the values off the Symbol are picked and populated into inddata for the specific symbol id.
+Values such as pip_value, pip_size, digits, TickSize.
+Please ensure the same is getting populated inside CTraderApp class as well in init_ind_data() function
+Derive proper equivalent values of PipValue, PipSize and TickSize and populate indata in CTraderApp
+_Period is a concept in Mq4 and should contain the number of minutes present in the current time frame of the assets for eg for M1 _Period ought to be 60 seconds
+
+
+
+
+
+        public void InitIndData()
+        {
+
+
+            _indData = new IndData
+
+            {
+                MagicNumber = 1002,
+                BarsHeld = 0,
+                Open = GetHistory(idx => Bars.OpenPrices[idx], 500),
+                High = GetHistory(idx => Bars.HighPrices[idx], 120),
+                Low = GetHistory(idx => Bars.LowPrices[idx], 120),
+                Close = GetHistory(idx => Bars.ClosePrices[idx], 500),
+                Time = GetHistory(idx => Bars.OpenTimes[idx].ToOADate(), 500).Select(t => DateTime.FromOADate(t)).ToArray(),
+                TickVolume = GetHistory(idx => Bars.TickVolumes[idx], 500),
+                StdClose = GetHistory(idx => _stdClose.Result[idx], 500),
+                StdOpen = GetHistory(idx => _stdOpen.Result[idx], 500),
+                Mfi = GetHistory(idx => _mfi.Result[idx], 500),
+                Atr = GetHistory(idx => _atr.Result[idx], 500),
+                Adx = GetHistory(idx => _adx.ADXR[idx], 500),     // main line = ADXR (smoothed ADX)
+                AdxPlus = GetHistory(idx => _adx.DIPlus[idx], 500),   // +DI
+                AdxMinus = GetHistory(idx => _adx.DIMinus[idx], 500),
+                Obv = GetHistory(idx => _obv.Result[idx], 500),
+                Rsi = GetHistory(idx => _rsi.Result[idx], 500), // -DI
+                Ima5 = GetHistory(idx => _ima5.Result[idx], 500),
+                Ima14 = GetHistory(idx => _ima14.Result[idx], 500),
+                Ima30 = GetHistory(idx => _ima30.Result[idx], 500),
+                Ima60 = GetHistory(idx => _ima60.Result[idx], 500),
+                Ima120 = GetHistory(idx => _ima120.Result[idx], 500),
+                Ima240 = GetHistory(idx => _ima240.Result[idx], 500),
+                Ima500 = GetHistory(idx => _ima500.Result[idx], 500),
+                AvgStd = GetHistory(idx => _avgStdDev.Result[idx], 500),
+                Point = Symbol.TickSize,
+                Digits = Symbol.Digits,
+                PipValue = Symbol.PipValue,
+                PipSize = Symbol.PipSize,
+                DBL_EPSILON = (Symbol.TickSize * 0.1),
+                // cTrader .NET 6 standard way to get total minutes
+                _Period = GetMinutes(TimeFrame),
+                Current_Period = GetMinutes(TimeFrame),
+                Shift = 0,
+                TotalOrders = Positions.Count(p => p.Label == _label && p.SymbolName == SymbolName)
+            };
+        }
+
+
+
+
+
+
+
+
 
 
 

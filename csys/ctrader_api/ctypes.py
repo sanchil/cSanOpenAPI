@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Deque, Iterable, Optional
+from typing import Any, Deque, Dict, Iterable, Optional
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -28,6 +28,149 @@ from typing import Deque, Iterable, Optional
 # cTrader relative price scale: prices are in 1/100000 of a price unit.
 PRICE_SCALE = 100_000
 DEFAULT_BAR_CAPACITY = 500
+
+# Bar period name → minutes (PhyBot GetMinutes / mq4 _Period style)
+PERIOD_MINUTES: Dict[str, int] = {
+    "M1": 1,
+    "M2": 2,
+    "M3": 3,
+    "M4": 4,
+    "M5": 5,
+    "M10": 10,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240,
+    "H12": 720,
+    "D1": 1440,
+    "W1": 10080,
+    "MN1": 43200,
+}
+
+
+# ---------------------------------------------------------------------------
+# Symbol meta (from ProtoOASymbol — Open API has digits/pipPosition, not PipSize)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SymbolMeta:
+    """Per-symbol trading meta derived from Open API ProtoOASymbol.
+
+    cTrader Automate maps:
+      PipSize  ← pip_size   (price length of one pip)
+      TickSize ← point      (min price increment)
+      Digits   ← digits
+      PipValue ← pip_value  (approx money/pip; 0 if unknown)
+    """
+
+    symbol_id: int
+    name: str = ""
+    digits: int = 5
+    pip_position: int = 4
+    pip_size: float = 0.0001
+    point: float = 0.00001
+    lot_size: int = 0  # protocol cents-of-units for 1 lot
+    pip_value: float = 0.0  # deposit/quote approximation; may be 0
+    min_volume: float = 0.0  # high-level units
+    step_volume: float = 0.0
+
+    @property
+    def dbl_epsilon(self) -> float:
+        return self.point * 0.1 if self.point > 0 else 1e-10
+
+
+def period_minutes(period: str) -> int:
+    """Map ProtoOATrendbarPeriod name (e.g. M1) → minutes (cBot GetMinutes)."""
+    return PERIOD_MINUTES.get(str(period).upper(), 1)
+
+
+def period_seconds(period: str) -> int:
+    """Timeframe length in seconds (design.txt: M1 → 60)."""
+    return period_minutes(period) * 60
+
+
+def symbol_meta_from_proto(sym: Any, name: str = "") -> SymbolMeta:
+    """
+    Build SymbolMeta from a ProtoOASymbol (full) message.
+
+    Open API does not expose PipSize/PipValue; derive:
+      point    = 10^(-digits)
+      pip_size = 10^(-pipPosition) if pipPosition > 0 else point
+      pip_value ≈ pip_size * (lotSize/100)  # FX quote-ccy approx per 1 lot
+    """
+    symbol_id = int(getattr(sym, "symbolId", 0) or 0)
+    digits = int(getattr(sym, "digits", 5) or 5)
+    pip_position = int(getattr(sym, "pipPosition", 0) or 0)
+    lot_size = int(getattr(sym, "lotSize", 0) or 0)
+    min_vol = int(getattr(sym, "minVolume", 0) or 0) / 100.0
+    step_vol = int(getattr(sym, "stepVolume", 0) or 0) / 100.0
+
+    digits = max(0, min(digits, 12))
+    point = 10.0 ** (-digits) if digits > 0 else 1.0
+
+    if pip_position > 0:
+        pip_position = max(0, min(pip_position, 12))
+        pip_size = 10.0 ** (-pip_position)
+    else:
+        # Fallback: 5-digit style (pip = 10 * point) or point itself
+        pip_size = point * 10.0 if digits >= 3 else point
+
+    # Approximate pip value in quote units for 1 lot (Open API has no deposit conversion here)
+    pip_value = 0.0
+    if lot_size > 0 and pip_size > 0:
+        # lotSize is volume of 1 lot in cents of units → units = lotSize/100
+        pip_value = pip_size * (lot_size / 100.0)
+
+    sym_name = name or str(getattr(sym, "symbolName", "") or getattr(sym, "name", "") or "")
+
+    return SymbolMeta(
+        symbol_id=symbol_id,
+        name=sym_name,
+        digits=digits,
+        pip_position=pip_position,
+        pip_size=pip_size,
+        point=point,
+        lot_size=lot_size,
+        pip_value=pip_value,
+        min_volume=min_vol,
+        step_volume=step_vol,
+    )
+
+
+def apply_symbol_meta(
+    ind: "IndData",
+    meta: SymbolMeta,
+    *,
+    period_secs: Optional[int] = None,
+    period_mins: Optional[int] = None,
+) -> "IndData":
+    """Copy SymbolMeta fields onto IndData (PhyBot InitIndData parity).
+
+    Parameters
+    ----------
+    period_secs :
+        Bar timeframe length in **seconds** (design.txt: M1 → 60).
+        Preferred for IndData.period / current_period.
+    period_mins :
+        Legacy alias; converted to seconds if period_secs is omitted.
+    """
+    ind.symbol_id = meta.symbol_id
+    if meta.name:
+        ind.symbol_name = meta.name
+    # PhyBot: Digits, PipSize, PipValue, Point(=TickSize), DBL_EPSILON
+    ind.digits = meta.digits
+    ind.pip_position = meta.pip_position
+    ind.pip_size = meta.pip_size
+    ind.pip_value = meta.pip_value
+    ind.point = meta.point  # TickSize
+    ind.dbl_epsilon = meta.dbl_epsilon
+    # design.txt: M1 period = 60 seconds (not MQL enum 1)
+    if period_secs is None:
+        period_secs = int(period_mins) * 60 if period_mins is not None else 60
+    ind.period = int(period_secs)
+    ind.current_period = float(period_secs)
+    ind.bars_held = 0
+    return ind
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +436,8 @@ class IndData:
         self.point = 0.0
         self.period = 0
         self.pip_size = 0.0
+        self.digits: int = 5  # price precision (from ProtoOASymbol.digits)
+        self.pip_position: int = 4  # ProtoOASymbol.pipPosition
         self.current_period = 0.0
         self.dbl_epsilon = 1e-10
         self.consensus_threshold = 0.0
@@ -456,11 +601,17 @@ class IndData:
 __all__ = [
     "PRICE_SCALE",
     "DEFAULT_BAR_CAPACITY",
+    "PERIOD_MINUTES",
     "SIG",
     "DECAY_STRATEGY",
     "DTYPE",
     "T_SIG",
     "IndData",
+    "SymbolMeta",
+    "period_minutes",
+    "period_seconds",
+    "symbol_meta_from_proto",
+    "apply_symbol_meta",
     "relative_to_price",
     "decode_trendbar",
 ]

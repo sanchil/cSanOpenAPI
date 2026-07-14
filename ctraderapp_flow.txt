@@ -1,0 +1,337 @@
+CTraderApp lifecycle flowchart
+==============================
+Source: capp/ctraderapp.py  (+ CTraderOpenAPI in csys/ctrader_api/client.py)
+Entry:  main.py → CTraderApp(config).run()
+
+
+0. Construction (__init__)
+--------------------------
+  main.py
+    │
+    ├─ load_config()                         [csys]
+    └─ CTraderApp(config)
+         │
+         ├─ self.api = CTraderOpenAPI(config)
+         ├─ self.api.on_ready   = self.on_init      # callback when account auth succeeds
+         ├─ self.api.on_message = self.on_message   # all inbound protobuf after auth
+         ├─ hist_bars, symbol_map, current_bar, …
+         ├─ self.signals    = SanSignals()
+         ├─ self.strategies = CStrategies(signals)
+         └─ self.executor   = OrderExecutor(api, …)
+
+  No network I/O yet — only wires callbacks and collaborators.
+
+
+1. run() — fire up
+------------------
+  CTraderApp.run()
+       │
+       └─► CTraderOpenAPI.run()
+              │
+              ├─ connect()  → Client.startService()   # TCP to cTrader
+              └─ reactor.run()                        # BLOCKS (Twisted event loop)
+
+
+2. Auth chain (inside CTraderOpenAPI — before any CTraderApp method)
+--------------------------------------------------------------------
+  TCP connected
+       │
+       ▼
+  _on_connected()
+       │
+       ▼
+  _authenticate_application()     # ProtoOAApplicationAuthReq
+       │
+       ▼  (ProtoOAApplicationAuthRes)
+  _authenticate_account()         # ProtoOAAccountAuthReq
+       │
+       ▼  (ProtoOAAccountAuthRes)
+  on_ready()  ──►  CTraderApp.on_init()
+
+
+3. Startup sequence (after auth) — deferred callback chain
+----------------------------------------------------------
+
+  on_init()
+       │
+       ├─ api.subscribe_spots(fxpair_arr)          # ProtoOASubscribeSpotsReq
+       │     ├─ ok  → on_spots_subscribed
+       │     └─ err → on_subscription_error
+       │
+  on_spots_subscribed(_)
+       │
+       ├─ api.get_symbols()                        # ProtoOASymbolsListReq
+       │     ├─ ok  → on_symbols_received
+       │     └─ err → on_symbols_error
+       │
+  on_symbols_received(response)
+       │
+       ├─ fill symbol_map[symbolId] = symbolName
+       └─ init_ind_data()
+              │
+              │  for each symbol_id in fxpair_arr:
+              │     hist_bars[id] = IndData(...)
+              │     api.get_trendbars(id, period, count=500)
+              │        ├─ ok  → on_historical_bars_received(resp, id)
+              │        └─ err → on_historical_error(fail, id)
+              │
+  on_historical_bars_received(response, symbol_id)
+       │
+       ├─ decode_trendbar() each bar  → load_bars() into IndData
+       ├─ run_signal_cycle(data, id, execute=False)   # seed only: NO orders
+       │     (see §5)
+       ├─ _hist_pending -= 1
+       └─ when _hist_pending == 0 → _on_all_historical_loaded()
+              │
+              │  (on_historical_error also decrements pending → same gate)
+              │
+  _on_all_historical_loaded()
+       │
+       ├─ _hist_ready = True
+       ├─ executor.sync_positions()                # ProtoOAReconcileReq
+       │     ├─ ok  → _on_positions_synced
+       │     └─ err → _on_positions_sync_error     # still continues
+       │
+  _on_positions_synced / _on_positions_sync_error
+       │
+       └─ _subscribe_live_trendbars()
+              │
+              │  for each symbol:
+              │     api.subscribe_live_trendbars(id, period)
+              │
+              ▼
+         *** LIVE LOOP ***  (messages arrive via on_message)
+
+
+ASCII (startup):
+
+  run()
+    → api.run() → connect + reactor.run()
+         → [TCP] _on_connected
+              → app auth → account auth
+                   → on_init
+                        → subscribe_spots
+                             → on_spots_subscribed
+                                  → get_symbols
+                                       → on_symbols_received
+                                            → init_ind_data
+                                                 → get_trendbars × N
+                                                      → on_historical_bars_received × N
+                                                           → run_signal_cycle(execute=False)
+                                                           → (last symbol) _on_all_historical_loaded
+                                                                → executor.sync_positions
+                                                                     → _subscribe_live_trendbars
+                                                                          → on_message forever…
+
+
+4. Live message loop
+--------------------
+
+  Every extracted protobuf after auth hits:
+
+  on_message(message)
+       │
+       ├─ if has executionType:
+       │      executor.on_execution_event(message)   # fill/close bookkeeping
+       │      return
+       │
+       └─ on_tick(message)                           # spots / live trendbars
+              │
+              ├─ ignore if no symbolId or symbol not in hist_bars
+              │
+              ├─ if message.trendbar (live bar payload):
+              │      for bar in trendbar:
+              │         _apply_live_trendbar(symbol_id, bar)
+              │      return
+              │
+              └─ else (spot bid/ask fallback):
+                     mid = (bid+ask)/2  [scaled via relative_to_price]
+                     update_current_bar(symbol_id, price, volume, ts)
+                     check_for_new_bar(ts)
+                          │
+                          └─ if minute rolled:
+                                 on_bar()   # synthetic bar path
+
+
+4a. Official live trendbar path — _apply_live_trendbar
+------------------------------------------------------
+
+  _apply_live_trendbar(symbol_id, bar)
+       │
+       ├─ decode_trendbar(bar)
+       │
+       ├─ first bar for symbol (prev is None):
+       │      update_last_bar OR append_decoded_bar
+       │      store _last_live_bar_minutes[id]
+       │      return
+       │
+       ├─ same minute as prev:
+       │      update_last_bar(...)   # forming bar OHLCV only
+       │      return                 # NO signal cycle
+       │
+       └─ new minute (minutes > prev):
+              append_decoded_bar(...)
+              run_signal_cycle(data, symbol_id)   # execute=True if _hist_ready
+              log bar + SIG
+              _fire_on_bar_event()                # optional handlers
+
+
+4b. Synthetic bar path (no live trendbar on spot)
+-------------------------------------------------
+
+  update_current_bar → check_for_new_bar
+       │
+       └─ on_bar()   # for each symbol in current_bar
+              ├─ hist_bars[id].append_bar(...)
+              ├─ run_signal_cycle(data, symbol_id)
+              ├─ reset current_bar to next open
+              └─ _fire_on_bar_event()
+
+
+5. Once-per-cycle decision pipeline — run_signal_cycle
+------------------------------------------------------
+
+  run_signal_cycle(data, symbol_id, execute=True|False)
+       │
+       ├─ refresh_indicators(data)
+       │      └─ csys.cindicators.snapshot.compute_indicators(data)
+       │           (ima*, atr, adx, di±, std_* written into IndData)
+       │
+       ├─ strategies.evaluate(data)
+       │      └─ signals.init_sig(data) → T_SIG
+       │      └─ Strategy_N(t_sig) → trade_sig (SIG)
+       │
+       ├─ store last_t_sig[sid], last_trade_sig[sid]
+       │
+       ├─ _sync_position_state(data, sid, trade_sig)
+       │
+       ├─ if execute and _hist_ready:
+       │      executor.handle_signal(sid, trade_sig)
+       │         │
+       │         ├─ flat + BUY/SELL  → open market (no SL/TP)
+       │         ├─ same side        → no-op
+       │         ├─ opposite / CLOSE → close position
+       │         └─ (network: new_market_order / close_position)
+       │      _sync_position_state(...) again
+       │
+       └─ return trade_sig
+
+
+ASCII (signal cycle):
+
+  run_signal_cycle
+    │
+    ├─► refresh_indicators ──► compute_indicators
+    │
+    ├─► strategies.evaluate
+    │      ├─► SanSignals.init_sig  (fsig*, baseSlope, slope30, fastSIG, …)
+    │      └─► Strategy_1..4 → SIG
+    │
+    ├─► _sync_position_state
+    │
+    └─► [if live] executor.handle_signal
+           └─► _sync_position_state
+
+
+6. Call graph (methods on CTraderApp)
+-------------------------------------
+
+  Construction / entry
+    __init__
+    run
+
+  Startup chain
+    on_init
+    on_spots_subscribed
+    on_subscription_error
+    on_symbols_received
+    on_symbols_error
+    init_ind_data
+    on_historical_bars_received
+    on_historical_error
+    _on_all_historical_loaded
+    _on_positions_synced
+    _on_positions_sync_error
+    _subscribe_live_trendbars
+
+  Live loop
+    on_message
+    on_tick
+    _apply_live_trendbar
+    update_current_bar
+    check_for_new_bar
+    on_bar
+    _fire_on_bar_event
+    add_on_bar_handler
+
+  Decision / trade
+    refresh_indicators
+    run_signal_cycle
+    _sync_position_state
+
+
+7. External collaborators (not methods of CTraderApp)
+-----------------------------------------------------
+
+  CTraderOpenAPI
+    run, connect, subscribe_spots, get_symbols, get_trendbars,
+    subscribe_live_trendbars, new_market_order, close_position, reconcile, …
+
+  OrderExecutor
+    sync_positions, handle_signal, on_execution_event, has_position, …
+
+  SanSignals.init_sig
+  CStrategies.evaluate
+  compute_indicators / decode_trendbar / relative_to_price
+
+
+8. Flags that gate behavior
+---------------------------
+
+  _hist_ready
+    False until all historical trendbar requests finish.
+    run_signal_cycle only places orders when execute=True AND _hist_ready.
+
+  execute= (arg on run_signal_cycle)
+    False on historical seed (signals computed, no orders).
+    True on live bar close (default).
+
+  executor.enabled / executor.dry_run
+    Master switch / log-only mode for OrderExecutor.
+
+
+9. Mermaid (optional render)
+----------------------------
+
+```mermaid
+flowchart TD
+  A[main: CTraderApp.run] --> B[api.run / reactor]
+  B --> C[TCP connect]
+  C --> D[App auth]
+  D --> E[Account auth]
+  E --> F[on_init]
+  F --> G[subscribe_spots]
+  G --> H[on_spots_subscribed]
+  H --> I[get_symbols]
+  I --> J[on_symbols_received]
+  J --> K[init_ind_data]
+  K --> L[get_trendbars x N]
+  L --> M[on_historical_bars_received]
+  M --> N[run_signal_cycle execute=False]
+  M --> O{_hist_pending == 0?}
+  O -->|yes| P[_on_all_historical_loaded]
+  P --> Q[executor.sync_positions]
+  Q --> R[_subscribe_live_trendbars]
+  R --> S[on_message loop]
+  S -->|executionType| T[executor.on_execution_event]
+  S -->|spot/trendbar| U[on_tick]
+  U -->|live trendbar| V[_apply_live_trendbar]
+  V -->|new minute| W[run_signal_cycle execute=True]
+  W --> X[refresh_indicators]
+  X --> Y[strategies.evaluate]
+  Y --> Z[executor.handle_signal]
+  U -->|bid/ask only| AA[update_current_bar / check_for_new_bar]
+  AA -->|minute roll| AB[on_bar → run_signal_cycle]
+```
+
+End of file.

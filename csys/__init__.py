@@ -22,10 +22,16 @@ from csys.ctrader_api.ctypes import (
     DECAY_STRATEGY,
     DTYPE,
     IndData,
+    PERIOD_MINUTES,
     SIG,
+    SymbolMeta,
     T_SIG,
+    apply_symbol_meta,
     decode_trendbar,
+    period_minutes,
+    period_seconds,
     relative_to_price,
+    symbol_meta_from_proto,
 )
 
 __all__ = [
@@ -40,7 +46,13 @@ __all__ = [
     "DECAY_STRATEGY",
     "DTYPE",
     "T_SIG",
+    "SymbolMeta",
     "DEFAULT_BAR_CAPACITY",
+    "PERIOD_MINUTES",
     "decode_trendbar",
     "relative_to_price",
+    "symbol_meta_from_proto",
+    "apply_symbol_meta",
+    "period_minutes",
+    "period_seconds",
 ]
