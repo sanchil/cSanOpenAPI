@@ -26,7 +26,7 @@ class CStrategies:
         profit_close_threshold: float = 4.0,
     ) -> None:
         self.signals = signals or SanSignals()
-        self.active = int(active)  # Strategy_1 .. Strategy_4
+        self.active = int(active)  # Strategy_1 .. Strategy_5
         self.profit_close_threshold = float(profit_close_threshold)
         self.last_t_sig: Optional[T_SIG] = None
         self.last_sig: SIG = SIG.NOSIG
@@ -156,13 +156,16 @@ class CStrategies:
 
     def strategy_5(self, t_sig: T_SIG, total_trade_profits: float = 0.0) -> SIG:
         """
-        slope30 strategy (CStrategies.Strategy_4).
+        slope30 + profit-exit strategy (CStrategies.Strategy_5).
+
+        - CLOSE when slope30_sig is CLOSE (any fast_sig).
+        - CLOSE when total_trade_profits >= profit_close_threshold (any slope).
+        - BUY/SELL when slope30_sig is directional.
+        - Else NOSIG.
         """
         if t_sig.slope30_sig == SIG.CLOSE:
             return SIG.CLOSE
-        if (
-            total_trade_profits >= self.profit_close_threshold
-        ):
+        if total_trade_profits >= self.profit_close_threshold:
             return SIG.CLOSE
         if t_sig.slope30_sig in (SIG.BUY, SIG.SELL):
             return t_sig.slope30_sig
