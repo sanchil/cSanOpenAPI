@@ -45,6 +45,7 @@ class CStrategies:
 
         Call once per bar after ``compute_indicators(ind)``.
         """
+        print(f" Total Trade Profits: {total_trade_profits} Active Strategy: {strategy} ")
         t_sig = self.signals.init_sig(ind, shift=shift)
         self.last_t_sig = t_sig
         n = self.active if strategy is None else int(strategy)
@@ -65,6 +66,7 @@ class CStrategies:
             2: self.strategy_2,
             3: self.strategy_3,
             4: self.strategy_4,
+            5: self.strategy_5,
         }
         fn = dispatch.get(int(n), self.strategy_1)
         if n == 1:
@@ -151,3 +153,19 @@ class CStrategies:
         return SIG.NOSIG
 
     Strategy_4 = strategy_4
+
+    def strategy_5(self, t_sig: T_SIG, total_trade_profits: float = 0.0) -> SIG:
+        """
+        slope30 strategy (CStrategies.Strategy_4).
+        """
+        if t_sig.slope30_sig == SIG.CLOSE:
+            return SIG.CLOSE
+        if (
+            total_trade_profits >= self.profit_close_threshold
+        ):
+            return SIG.CLOSE
+        if t_sig.slope30_sig in (SIG.BUY, SIG.SELL):
+            return t_sig.slope30_sig
+        return SIG.NOSIG
+
+    Strategy_5 = strategy_5

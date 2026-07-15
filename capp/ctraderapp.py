@@ -699,6 +699,7 @@ class CTraderApp:
         trade_sig = self.strategies.evaluate(
             data,
             total_trade_profits=total_trade_profits,
+            strategy=self.strategies.active,
         )
         t_sig = self.strategies.last_t_sig
         if t_sig is not None:

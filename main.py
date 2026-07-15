@@ -6,5 +6,5 @@ from capp import CTraderApp
 
 if __name__ == "__main__":
     config = load_config()
-    app = CTraderApp(config)
+    app = CTraderApp(config,active_strategy=5)
     app.run()
