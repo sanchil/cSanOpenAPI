@@ -40,10 +40,13 @@ class CTraderApp:
 
     Per bar cycle (once, live):
       compute_indicators
-        → fetch_position_pnls (reconcile + unrealized PnL; finish-callback)
+        → fetch_position_pnls (single-flight reconcile + unrealized PnL)
         → SanUtils.get_total_trade_profits
         → strategies.evaluate
         → OrderExecutor.handle_signal
+
+    Account PnL is serialized: concurrent symbol bar cycles join one in-flight
+    fetch instead of parallel reconcile/PnL requests (TASK 11).
     """
 
     def __init__(
@@ -85,6 +88,10 @@ class CTraderApp:
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
         self.last_total_trade_profits: float = 0.0
+
+        # TASK 11: at most one account PnL fetch in flight (multi-symbol bars join it)
+        self._pnl_fetch_inflight: Optional[defer.Deferred] = None
+        self._pnl_req_seq: int = 0
 
         # TASK 2: single-trade order execution (no SL/TP, no pyramid)
         self.executor = OrderExecutor(
@@ -507,32 +514,74 @@ class CTraderApp:
         return compute_indicators(data)
 
     # ---------------------------------------------------------- position PnL
-    # Longer timeout: parallel races were timing out at 10s with (10, 'Deferred')
+    # Timeout for a single reconcile / unrealized-PnL RPC (not per parallel race)
     _PNL_TIMEOUT_S = 30
 
     def fetch_position_pnls(self) -> defer.Deferred:
         """
-        Build Sequence[PositionPnL] for SanUtils (TASK 10).
+        Build Sequence[PositionPnL] for SanUtils (TASK 10 / 11).
 
-        Sequential finish-callback chain (dependent calls in order):
+        Single-flight across symbols: if a fetch is already in progress, join it
+        (same snapshot) instead of starting another reconcile + PnL pair.
+
+        Internal chain (one at a time):
           1. api.reconcile(timeout=30)          → open positions + label/symbol
           2. api.get_unrealized_pnl(timeout=30) → netUnrealizedPnL per positionId
           3. merge → list[PositionPnL]
 
         dry_run: empty list (avg profits = 0).
+
+        Each caller gets its own Deferred so strategy callbacks can transform the
+        result without corrupting sibling cycles that joined the same fetch.
         """
         if self.executor.dry_run:
             return defer.succeed([])
 
+        if self._pnl_fetch_inflight is not None:
+            return self._share_pnl_result(self._pnl_fetch_inflight)
+
+        master = self._start_pnl_fetch()
+        self._pnl_fetch_inflight = master
+
+        def _clear_inflight(result):
+            if self._pnl_fetch_inflight is master:
+                self._pnl_fetch_inflight = None
+            return result
+
+        master.addBoth(_clear_inflight)
+        return self._share_pnl_result(master)
+
+    def _share_pnl_result(self, master: defer.Deferred) -> defer.Deferred:
+        """Fan-out: new Deferred fires with master's list without chaining SIG transforms."""
+        out: defer.Deferred = defer.Deferred()
+
+        def _ok(result):
+            if not out.called:
+                # Shallow copy so consumers cannot mutate a shared list in place
+                out.callback(list(result) if isinstance(result, list) else result)
+            return result
+
+        def _err(failure):
+            if not out.called:
+                out.errback(failure)
+            return failure
+
+        master.addCallbacks(_ok, _err)
+        return out
+
+    def _start_pnl_fetch(self) -> defer.Deferred:
+        """Kick off one reconcile → unrealized PnL chain (unique clientMsgIds)."""
+        self._pnl_req_seq += 1
+        seq = self._pnl_req_seq
         d = self.api.reconcile(
-            client_msg_id="pnl_reconcile",
+            client_msg_id=f"pnl_reconcile_{seq}",
             timeout=self._PNL_TIMEOUT_S,
         )
-        d.addCallback(self._after_reconcile_fetch_pnl)
+        d.addCallback(self._after_reconcile_fetch_pnl, seq)
         d.addErrback(self._on_reconcile_pnl_error)
         return d
 
-    def _after_reconcile_fetch_pnl(self, rec) -> defer.Deferred:
+    def _after_reconcile_fetch_pnl(self, rec, seq: int) -> defer.Deferred:
         """Only after reconcile succeeds, request unrealized PnL."""
         try:
             self.executor.sync_from_reconcile(rec)
@@ -540,7 +589,7 @@ class CTraderApp:
             print(f"⚠️  sync_from_reconcile: {e}")
 
         d_pnl = self.api.get_unrealized_pnl(
-            client_msg_id="pnl_unrealized",
+            client_msg_id=f"pnl_unrealized_{seq}",
             timeout=self._PNL_TIMEOUT_S,
         )
         d_pnl.addCallback(lambda pnl_res: self._build_position_pnls(rec, pnl_res))
@@ -615,8 +664,9 @@ class CTraderApp:
           3. strategies.evaluate(..., total_trade_profits)
           4. executor.handle_signal
 
-        Live path waits for reconcile + unrealized PnL (finish-callback) before
-        strategy/execution. Seed path (execute=False) skips PnL and is sync.
+        Live path waits for single-flight reconcile + unrealized PnL before
+        strategy/execution. Concurrent symbols join the same in-flight snapshot.
+        Seed path (execute=False) skips PnL and is sync.
         """
         self.refresh_indicators(data)
         sid = symbol_id if symbol_id is not None else data.symbol_id
@@ -632,7 +682,7 @@ class CTraderApp:
                 log_tag=log_tag,
             )
 
-        # Dependent calls must complete before strategy (finish-callback pattern)
+        # Single-flight PnL; each cycle has its own Deferred for strategy finish
         d = self.fetch_position_pnls()
         d.addCallback(
             self._on_position_pnls_ready, data, sid, log_bar, log_tag

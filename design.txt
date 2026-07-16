@@ -292,6 +292,150 @@ First think about retrieving the sequence of positions. Detail out which calls w
 positional seq call to be part of utils.py or CTraderApp?
 
 
+TASK 11:
+
+Resolve the following error stack trace. Primarily it appears with parallel handling of reconcile and pnl.
+Perhaps it is best if we handle them in strict sequence.
+There may be other reasons for causes of the following error stack trace such as sudden switching of vpn servers and other network related changes while the execution was in progress
+
+Please find reasons only for causes of this error stack below. Make no changes
+#############################################
+
+New bar closed [USDJPY] O=162.12200 H=162.12700 L=162.12200 C=162.12200 V=76 ATR=0.00945 ADX=19.35 avgPnL=0.00 SIG=NOSIG
+ Total Trade Profits: 0.655 Active Strategy: 5
+New bar closed [USDJPY] O=162.12700 H=162.13100 L=162.12600 C=162.12600 V=88 ATR=0.00911 ADX=19.77 avgPnL=0.66 SIG=BUY
+ Total Trade Profits: 0.5700000000000001 Active Strategy: 5
+New bar closed [EURUSD] O=1.14641 H=1.14643 L=1.14637 C=1.14637 V=42 ATR=0.00009 ADX=27.61 avgPnL=0.57 SIG=SELL
+ Total Trade Profits: -0.05 Active Strategy: 5
+New bar closed [USDJPY] O=162.12700 H=162.12800 L=162.12300 C=162.12300 V=46 ATR=0.00880 ADX=18.68 avgPnL=-0.05 SIG=BUY
+ Total Trade Profits: 0.0 Active Strategy: 5
+New bar closed [EURUSD] O=1.14639 H=1.14651 L=1.14639 C=1.14639 V=36 ATR=0.00009 ADX=26.33 avgPnL=0.00 SIG=SELL
+ Total Trade Profits: 0.345 Active Strategy: 5
+New bar closed [EURUSD] O=1.14648 H=1.14653 L=1.14647 C=1.14647 V=40 ATR=0.00009 ADX=25.95 avgPnL=0.34 SIG=SELL
+⚠️  reconcile for PnL failed: (30, 'Deferred')
+ Total Trade Profits: 0.0 Active Strategy: 5
+New bar closed [USDJPY] O=162.12200 H=162.12700 L=162.12100 C=162.12100 V=42 ATR=0.00886 ADX=17.81 avgPnL=0.00 SIG=BUY
+ Total Trade Profits: 0.53 Active Strategy: 5
+New bar closed [EURUSD] O=1.14646 H=1.14647 L=1.14639 C=1.14639 V=32 ATR=0.00009 ADX=27.08 avgPnL=0.53 SIG=SELL
+⚠️  reconcile for PnL failed: (30, 'Deferred')
+ Total Trade Profits: 0.0 Active Strategy: 5
+New bar closed [USDJPY] O=162.12600 H=162.13100 L=162.12600 C=162.12600 V=90 ATR=0.00927 ADX=18.66 avgPnL=0.00 SIG=NOSIG
+ Total Trade Profits: 0.7100000000000001 Active Strategy: 5
+New bar closed [USDJPY] O=162.13600 H=162.15400 L=162.13400 C=162.13400 V=80 ATR=0.01102 ADX=21.64 avgPnL=0.71 SIG=NOSIG
+⚠️  reconcile for PnL failed: (30, 'Deferred')
+ Total Trade Profits: 0.0 Active Strategy: 5
+New bar closed [EURUSD] O=1.14645 H=1.14650 L=1.14639 C=1.14639 V=62 ATR=0.00010 ADX=26.47 avgPnL=0.00 SIG=NOSIG
+ Total Trade Profits: 1.53 Active Strategy: 5
+New bar closed [EURUSD] O=1.14651 H=1.14651 L=1.14636 C=1.14636 V=80 ATR=0.00010 ADX=27.18 avgPnL=1.53 SIG=SELL
+ Total Trade Profits: 1.435 Active Strategy: 5
+New bar closed [USDJPY] O=162.15100 H=162.15900 L=162.15000 C=162.15000 V=52 ATR=0.01126 ADX=23.69 avgPnL=1.44 SIG=BUY
+ Total Trade Profits: 2.6149999999999998 Active Strategy: 5
+New bar closed [EURUSD] O=1.14639 H=1.14646 L=1.14636 C=1.14636 V=64 ATR=0.00009 ADX=27.54 avgPnL=2.61 SIG=SELL
+⚠️  reconcile for PnL failed: (30, 'Deferred')
+ Total Trade Profits: 0.0 Active Strategy: 5
+New bar closed [USDJPY] O=162.15700 H=162.17600 L=162.15300 C=162.15300 V=76 ATR=0.01343 ADX=26.86 avgPnL=0.00 SIG=BUY
+ Total Trade Profits: 2.71 Active Strategy: 5
+New bar closed [USDJPY] O=162.17700 H=162.18100 L=162.16500 C=162.16500 V=90 ATR=0.01317 ADX=29.36 avgPnL=2.71 SIG=BUY
+ Total Trade Profits: 2.74 Active Strategy: 5
+New bar closed [EURUSD] O=1.14635 H=1.14635 L=1.14621 C=1.14621 V=78 ATR=0.00010 ADX=29.87 avgPnL=2.74 SIG=SELL
+Unhandled Error
+Traceback (most recent call last):
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/log.py", line 96, in callWithLogger
+    return callWithContext({"system": lp}, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/log.py", line 80, in callWithContext
+    return context.call({ILogContext: newCtx}, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/context.py", line 117, in callWithContext
+    return self.currentContext().callWithContext(ctx, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/context.py", line 82, in callWithContext
+    return func(*args, **kw)
+--- <exception caught here> ---
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/posixbase.py", line 482, in _doReadOrWrite
+    why = selectable.doRead()
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/tcp.py", line 250, in doRead
+    return self._dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/tcp.py", line 255, in _dataReceived
+    rval = self.protocol.dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/tls.py", line 339, in dataReceived
+    self._flushReceiveBIO()
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/tls.py", line 305, in _flushReceiveBIO
+    ProtocolWrapper.dataReceived(self, bytes)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/policies.py", line 110, in dataReceived
+    self.wrappedProtocol.dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/endpoints.py", line 151, in dataReceived
+    return self._wrappedProtocol.dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/basic.py", line 732, in dataReceived
+    self.stringReceived(packet)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/tcpProtocol.py", line 74, in stringReceived
+    self.factory.received(msg)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/factory.py", line 15, in received
+    self.client._received(message)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/client.py", line 42, in _received
+    self._messageReceivedCallback(self, message)
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/csys/ctrader_api/client.py", line 523, in _on_message
+    self.on_message(Protobuf.extract(message))
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/capp/ctraderapp.py", line 355, in on_message
+    self.on_tick(message)
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/capp/ctraderapp.py", line 363, in on_tick
+    if symbol_id not in self.hist_bars:
+builtins.TypeError: unhashable type: 'RepeatedScalarFieldContainer'
+
+Unhandled Error
+Traceback (most recent call last):
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/csys/ctrader_api/client.py", line 104, in run
+    reactor.run()
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/base.py", line 695, in run
+    self.mainLoop()
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/base.py", line 708, in mainLoop
+    self.doIteration(t)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/epollreactor.py", line 244, in doPoll
+    log.callWithLogger(selectable, _drdw, selectable, fd, event)
+--- <exception caught here> ---
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/log.py", line 96, in callWithLogger
+    return callWithContext({"system": lp}, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/log.py", line 80, in callWithContext
+    return context.call({ILogContext: newCtx}, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/context.py", line 117, in callWithContext
+    return self.currentContext().callWithContext(ctx, func, *args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/python/context.py", line 82, in callWithContext
+    return func(*args, **kw)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/posixbase.py", line 495, in _doReadOrWrite
+    self._disconnectSelectable(selectable, why, inRead)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/posixbase.py", line 113, in _disconnectSelectable
+    selectable.connectionLost(failure.Failure(why))
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/tcp.py", line 510, in connectionLost
+    self._commonConnection.connectionLost(self, reason)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/tcp.py", line 328, in connectionLost
+    protocol.connectionLost(reason)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/tls.py", line 404, in connectionLost
+    self._flushReceiveBIO()
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/tls.py", line 305, in _flushReceiveBIO
+    ProtocolWrapper.dataReceived(self, bytes)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/policies.py", line 110, in dataReceived
+    self.wrappedProtocol.dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/internet/endpoints.py", line 151, in dataReceived
+    return self._wrappedProtocol.dataReceived(data)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/twisted/protocols/basic.py", line 732, in dataReceived
+    self.stringReceived(packet)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/tcpProtocol.py", line 74, in stringReceived
+    self.factory.received(msg)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/factory.py", line 15, in received
+    self.client._received(message)
+  File "/home/azure/spaces/condaenvs/6.86x/lib/python3.11/site-packages/ctrader_open_api/client.py", line 42, in _received
+    self._messageReceivedCallback(self, message)
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/csys/ctrader_api/client.py", line 523, in _on_message
+    self.on_message(Protobuf.extract(message))
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/capp/ctraderapp.py", line 355, in on_message
+    self.on_tick(message)
+  File "/home/azure/spaces/cTrader/cSanOpenAPI/capp/ctraderapp.py", line 363, in on_tick
+    if symbol_id not in self.hist_bars:
+builtins.TypeError: unhashable type: 'RepeatedScalarFieldContainer'
+
+
+
+
+
+
+
 
 
 
