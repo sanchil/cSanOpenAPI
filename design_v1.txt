@@ -1,0 +1,981 @@
+================================================================================
+grokApp_v6 — design_v1.txt
+Blueprint: reverse-engineered as-built + forward work plan
+================================================================================
+Status date: 2026-07-18
+Supersedes for planning: design.txt (historical task log; keep for provenance)
+Authoritative runtime notes still mirror AGENTS.md where they conflict with stale
+notes in design.txt (e.g. package names signals/strategies, Strategy_5 live).
+
+This document is the project blueprint for further build and extension.
+It is derived from the current codebase (capp/, csys/), design.txt TASK 1–11,
+ctraderapp_flow.txt, and selective comparison to code_references/mq4 and cBot.
+
+--------------------------------------------------------------------------------
+0. Purpose & product intent
+--------------------------------------------------------------------------------
+
+Migrate the **live execution path** of the MQ4 / cBot strategy stack onto the
+cTrader Open API (Python + Twisted), not the full MQ4 surface area.
+
+Primary references (read-only migration sources):
+  code_references/mq4/code_base_v98.txt   — entry: HSIG::initSIG
+  code_references/cBot/                   — PhyBot.cs, CSignal.cs, CStrategies.cs,
+                                            CStats.cs, CTypes.cs
+
+Principles:
+  1. Match **behavior** of the live path over porting unused helpers.
+  2. Once-per-bar indicators + signals; rest of the cycle only reads snapshots.
+  3. Single market position per symbol; no pyramid; no SL/TP unless redesigned.
+  4. Strict layer split: capp → csys; csys must never import capp.
+  5. Extend by well-scoped tasks (this file), not drive-by refactors.
+
+Out of scope (unless a task explicitly reopens them):
+  - Full MQ4 SanStrategies / SanSignals surface
+  - Pyramid trading (mq4 multi-trade-per-bar)
+  - main_fastapi.py as a production path
+  - Automatic reverse-and-open on the same bar after opposite signal
+
+
+================================================================================
+1. AS-BUILT ARCHITECTURE (reverse-engineered)
+================================================================================
+
+1.1 Two-layer model
+-------------------
+
+  capp  →  csys     # business may import system
+  csys  ↛  capp     # system must NOT import business
+
+  Layer     Package     Responsibility
+  --------  ----------  ----------------------------------------------------
+  System    csys/       Open API proto client, config, types, indicators,
+                        order plumbing
+  App       capp/       Signals, strategies, utils (PnL avg), bar-cycle
+                        orchestration (CTraderApp)
+
+1.2 Repository layout (current)
+-------------------------------
+
+  csys/
+    ctrader_api/           # client, config, execution, canonical ctypes
+      client.py           # CTraderOpenAPI (Twisted Deferreds)
+      config.py           # CTraderConfig / load_config (.env)
+      ctypes.py           # SIG, DTYPE, T_SIG, IndData, SymbolMeta, decode_*
+      execution.py        # OrderExecutor (single-position policy)
+      cenums.py           # shim → ctypes.SIG
+    cindicators/          # pure series: ma, atr, adx, stddev + snapshot
+    ctypes.py             # facade re-export of ctrader_api.ctypes
+  capp/
+    ctraderapp.py         # CTraderApp lifecycle + run_signal_cycle
+    signals/              # SanSignals, stats (slope_val / stencil)
+    strategies/           # CStrategies Strategy_1..5
+    utils.py              # SanUtils + PositionPnL
+  main.py                 # primary entry (active_strategy=5)
+  main_twisted.py         # optional OHLCV HTTP helper
+  main_fastapi.py         # incomplete experiment — do not prefer
+  basic.py                # raw SDK smoke sketch
+  design.txt              # historical tasks 1–11
+  design_v1.txt           # THIS blueprint
+  ctraderapp_flow.txt     # lifecycle flowchart (startup + live loop)
+  AGENTS.md               # agent/runtime conventions
+  code_references/        # migration sources only
+  .env                    # credentials (never commit)
+
+1.3 Types (single source of truth)
+----------------------------------
+
+  Canonical: csys/ctrader_api/ctypes.py
+  Import:    from csys.ctypes import SIG, IndData, DTYPE, T_SIG, SymbolMeta
+             (or from csys import …)
+
+  SIG: HOLD=101 BUY=102 SELL=103 CLOSE=104 TRADE=105 NOTRADE=106
+       SIDEWAYS=107 NOSIG=108
+
+  DTYPE: multi-value slope/kinematics transport (val1..val5)
+  T_SIG: once-per-cycle tactical signal bundle (fsig*, base_slope_sig,
+         slope30_sig, fast_sig, micro_wave_sig, strategy_sig, …)
+  IndData: OHLCV deques (oldest→newest) + indicator series + trading state
+           + symbol meta (pip_size, point, digits, period, pip_value, …)
+  SymbolMeta: derived from ProtoOASymbol (digits, pipPosition → pip_size,
+              point = 10^(-digits), approximate pip_value)
+
+  Do **not** add a second types module under capp.
+
+1.4 Series & indexing convention
+--------------------------------
+
+  IndData series: oldest → newest (Python deque; index -1 = newest).
+  MQ4/cBot shift: 0 = newest. Bridge via capp.signals.stats.mql_at / mql_index.
+  Live closed-bar analysis uses shift=1 on IndData (previous closed bar when
+  the last slot is the newly opened bar after a roll).
+
+1.5 Per-bar pipeline (as implemented)
+-------------------------------------
+
+  Implemented in CTraderApp.run_signal_cycle():
+
+    IndData (OHLCV)
+      → compute_indicators(ind)                    # csys.cindicators.snapshot
+      → [live only] fetch_position_pnls()          # single-flight reconcile
+            → SanUtils.get_total_trade_profits()   # multi-asset avg float PnL
+      → CStrategies.evaluate(ind, total_trade_profits)
+            → SanSignals.init_sig(ind) → T_SIG
+            → Strategy_N(t_sig) → SIG
+      → OrderExecutor.handle_signal(symbol_id, sig)
+      → _sync_position_state
+
+  Gates:
+    History seed:  execute=False  (indicators+signals only; no orders)
+    Live after _hist_ready: execute=True
+    dry_run / enabled on OrderExecutor control network vs simulation
+
+  Rule: indicators + signals once per bar; rest of cycle only reads IndData /
+  T_SIG / last_trade_sig / last_total_trade_profits.
+
+1.6 Startup & live lifecycle (summary)
+--------------------------------------
+
+  Detail: ctraderapp_flow.txt
+
+  main.py
+    → load_config() → CTraderApp(config, active_strategy=5).run()
+    → CTraderOpenAPI.run() → TCP connect → app auth → account auth
+    → on_init
+         → subscribe_spots(fxpair_arr)
+         → get_symbols → symbol_map
+         → get_symbols_by_id → SymbolMeta cache
+         → init_ind_data → get_trendbars × N (seed, execute=False)
+         → when all hist done: executor.sync_positions
+         → subscribe_live_trendbars
+    → on_message forever:
+         executionType → OrderExecutor.on_execution_event
+         else on_tick → live trendbar roll → run_signal_cycle
+                      → or synthetic mid-price bar fallback
+
+1.7 Signal generation path (TASK 1 as-built)
+--------------------------------------------
+
+  SanSignals.init_sig(ind):
+    base_slope_data = slope_val(ima240, 3, 5, shift)
+    slope30_data    = slope_val(ima30,  3, 5, shift)
+    base_slope_sig  = kinetic_acceleration_sig(val1, val2, 0.015, -0.06)
+    slope30_sig     = kinetic_acceleration_sig(val1, val2, 0.015, -0.2)
+    fsig{5,14,30,60,120,240,500} = fast_slow_sig(close, ima*, 0.0005)
+    fast_sig = fuse(fuse(fsig5, fsig14), fsig30) or CLOSE if NOSIG
+    micro_wave_sig = interim proxy (fsig30 ∩ base_slope_sig); full MicroWave
+                     from cBot not ported
+
+  Pure helpers also available: compute_stencil_kinematics (not wired into
+  Strategy_5 yet; cBot Strategy_5 sketch uses stencil + regime filters).
+
+1.8 Strategies (as-built)
+-------------------------
+
+  CStrategies.active ∈ {1..5}; main.py defaults to 5.
+  profit_close_threshold default = 4.0 (account-currency average float PnL).
+
+  Strategy_1  micWave alignment: fsig5==fsig30==micro_wave_sig directional
+              else CLOSE
+  Strategy_2  baseSlope + fast_sig HOLD exit; profit close; entry on alignment
+  Strategy_3  baseSlope CLOSE path + profit close; entry on alignment
+  Strategy_4  slope30 + HOLD/profit close; directional slope30 entry
+  Strategy_5  slope30 CLOSE always exits; profit threshold always exits;
+              else directional slope30 BUY/SELL; else NOSIG
+              (live default; **not** the commented physics Strategy_5 in cBot)
+
+1.9 Execution policy (TASK 2 as-built)
+--------------------------------------
+
+  Condition                    Action
+  ---------------------------  ---------------------------------------------
+  BUY/SELL while flat          Open one market order
+  BUY/SELL same side           No-op
+  Opposite signal              Close only (no reverse open same cycle)
+  CLOSE                        Close open position
+  SL / TP                      Never attached
+  Pyramid                      Forbidden (max 1 position per symbol)
+  Label                        "GrokApp" (filter on reconcile)
+  dry_run / enabled            Log-only or master off
+
+  Defaults (code): fxpair_arr=[1,4] (broker-dependent IDs), period M1,
+  capacity 500 bars, volume 10000 units.
+
+1.10 Account PnL path (TASK 7–11 as-built)
+------------------------------------------
+
+  Network (CTraderApp only — not SanUtils):
+    fetch_position_pnls (single-flight):
+      1. api.reconcile(timeout=30, unique client_msg_id)
+      2. executor.sync_from_reconcile
+      3. api.get_unrealized_pnl(timeout=30)
+      4. merge → list[PositionPnL]
+
+  Pure average (capp.utils.SanUtils):
+    get_total_trade_profits(positions, label=…)
+      = sum(net_profit of open matching label) / count
+    Multi-asset by default (all symbols under label).
+    Magic number optional (mq4 legacy only).
+
+  Concurrent multi-symbol bars join one in-flight fetch (TASK 11 race fix).
+  Failures degrade to avg=0 and still run strategy/execution.
+
+1.11 Open API client surface used by the app
+--------------------------------------------
+
+  CTraderOpenAPI methods on the trading path:
+    run / connect, subscribe_spots, get_symbols, get_symbols_by_id,
+    get_trendbars, subscribe_live_trendbars, reconcile, get_unrealized_pnl,
+    new_market_order, close_position
+
+  Available but lightly used / unused by CTraderApp today:
+    get_tick_data, limit/stop orders, cancel_order, close_all_positions,
+    refresh_access_token, get_trader, order details, deal offsets, …
+
+1.12 Indicators computed today
+------------------------------
+
+  compute_indicators fills: ima5/14/30/60/120/240/500, atr, adx, adx_plus,
+  adx_minus, std_close, std_open, avg_std.
+
+  IndData also has slots for mfi, obv, rsi (PhyBot fills them) — **not**
+  computed in Python yet.
+
+1.13 Runtime & dependencies
+---------------------------
+
+  Python 3.11+, Twisted Deferreds on the trading path (not asyncio).
+  requirements.txt:
+    ctrader-open-api==0.9.2
+    python-dotenv>=1.0.0
+    twisted>=24.3.0
+    inputimeout>=1.0.4
+
+  .env required:
+    CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCESS_TOKEN,
+    CTRADER_ACCOUNT_ID
+  Optional:
+    CTRADER_REFRESH_TOKEN, CTRADER_REDIRECT_URI, CTRADER_HOST=demo|live
+
+  Start:
+    pip install -r requirements.txt
+    python main.py
+    python main_twisted.py   # http://localhost:8080/ohlcv?…
+
+
+================================================================================
+2. COMPLETED TASK REGISTRY (design.txt → code truth)
+================================================================================
+
+  ID     Status      Summary
+  -----  ----------  ----------------------------------------------------------
+  T1     DONE        kineticAccelerationSIG, fuseSIG, slopeVal,
+                     computeStencilKinematics, fastSlowSIG, init_sig path
+  T2     DONE        Single market trade/symbol; no pyramid; no SL/TP;
+                     close on CLOSE or opposite
+  T3     DONE        Split into csys + capp
+  T4     DONE        Types facade; signals/strategies rename; import org;
+                     _sync_position_state
+  T5     LEARNING    Absorb mq4/cBot design ideas (no code deliverable)
+  T6     LEARNING    MarketMetrics study only (no code deliverable)
+  T7     DONE        SanUtils.get_total_trade_profits pure average
+  T8     DONE        Magic optional; cTrader prefers label
+  T9     DONE        init_ind_data symbol meta: digits, pip_size, point,
+                     pip_value, period (seconds), dbl_epsilon
+  T10    DONE        Wire PnL: CTraderApp fetch_position_pnls → SanUtils
+  T11    DONE        Single-flight PnL; sequential reconcile→unrealized;
+                     degrade on failure (race residual: see V1-T03)
+
+Notes on T11 residual:
+  design.txt stack trace also showed TypeError: unhashable type
+  'RepeatedScalarFieldContainer' when symbolId was not a plain int.
+  Live code now does list(getattr(message, "trendbar", []) or []) and
+  uses message.symbolId as dict key — still need hardening (V1-T03).
+
+
+================================================================================
+3. GAPS & DESIGN RISKS (code vs intent / references)
+================================================================================
+
+  G1  micro_wave_sig is a proxy; cBot MicroWaveSIG uses expansionCompressionRatio
+      + ATR floors — Strategy_1 is not full parity.
+  G2  compute_stencil_kinematics exists but no strategy consumes it.
+  G3  MarketMetrics / FEATURE_VECTOR / hold scores not ported (IndData has
+      placeholder fields: hold_score, bayesian_hold_score, fractal_alignment, …).
+  G4  RSI / MFI / OBV fields unused; PhyBot InitIndData fills them.
+  G5  Hardcoded fxpair_arr, volume, period, strategy, threshold in code —
+      not config-driven.
+  G6  No automated tests (AGENTS.md: pure functions + dry_run only).
+  G7  No reconnect / token refresh loop on disconnect mid-session.
+  G8  Opposite signal closes only; next-bar re-entry depends on strategy still
+      emitting the opposite side (by design of T2).
+  G9  pip_value is approximate (no deposit-currency conversion from Open API).
+  G10 main.py forces active_strategy=5; AGENTS.md still says Strategy 1 default
+      in places — docs drift.
+  G11 Logging is print-based; no structured logger or levels.
+  G12 ctraderapp.py is large (~800 lines); PnL + lifecycle + bar paths co-located.
+  G13 Multi-symbol bar closes can still interleave strategy logs; PnL is shared
+      snapshot but strategy evaluation is per-symbol concurrent Deferreds.
+  G14 Volume not validated against SymbolMeta min_volume / step_volume.
+  G15 No offline backtest harness (hist seed only runs execute=False once).
+
+
+================================================================================
+4. FORWARD BLUEPRINT — WELL-DEFINED TASKS (design_v1 work plan)
+================================================================================
+
+Numbering: V1-Tnn. Each task lists Goal, Scope, Acceptance, Dependencies,
+Non-goals. Implement in order within a dependency chain; independent tasks may
+run in parallel.
+
+--------------------------------------------------------------------------------
+PHASE A — Hardening & operational truth (stabilize the as-built system)
+--------------------------------------------------------------------------------
+
+V1-T01  Config surface for runtime parameters
+--------------------------------------------
+Goal:
+  Make symbol set, period, capacity, volume, strategy id, profit threshold,
+  dry_run, trading_enabled, and trade label configurable without code edits.
+
+Scope:
+  - Extend CTraderConfig (or a sibling AppConfig) loaded from .env / optional
+    YAML/JSON later; start with .env + load_config extensions.
+  - Suggested env keys:
+      CTRADER_SYMBOL_IDS=1,4
+      CTRADER_PERIOD=M1
+      CTRADER_BAR_CAPACITY=500
+      CTRADER_TRADE_VOLUME=10000
+      CTRADER_ACTIVE_STRATEGY=5
+      CTRADER_PROFIT_CLOSE_THRESHOLD=4.0
+      CTRADER_TRADE_LABEL=GrokApp
+      CTRADER_DRY_RUN=0|1
+      CTRADER_TRADING_ENABLED=1|0
+  - main.py constructs CTraderApp from that config only.
+
+Acceptance:
+  - Changing env alone switches symbols/strategy/volume.
+  - Defaults match current code behavior when env keys omitted.
+  - AGENTS.md / this file document the keys.
+
+Dependencies: none
+Non-goals: multi-account, UI, remote config service.
+
+---
+
+V1-T02  Documentation sync (design ↔ AGENTS ↔ code)
+---------------------------------------------------
+Goal:
+  Eliminate drift between design.txt legacy notes, AGENTS.md, and code.
+
+Scope:
+  - Update AGENTS.md mission table: TASK 1–11 status; Strategy_5 default;
+    PnL single-flight pipeline; utils.py; SymbolMeta.
+  - Point "authoritative product notes" to design_v1.txt for forward work;
+    design.txt retained as historical log.
+  - Fix package map: capp.utils, Strategy_1..5, fetch_position_pnls step.
+
+Acceptance:
+  - AGENTS.md matches main.py defaults and run_signal_cycle steps.
+  - No claim that Strategies stop at 4 or that PnL is unwired.
+
+Dependencies: none (can parallel V1-T01)
+Non-goals: rewriting mq4 references.
+
+---
+
+V1-T03  Message / symbolId hardening (TASK 11 residual)
+-------------------------------------------------------
+Goal:
+  Prevent unhashable / wrong-type keys and mis-routed ticks.
+
+Scope:
+  - Normalize message.symbolId to int at the top of on_tick / on_message.
+  - Guard: if symbolId is a protobuf container or non-int, log and return.
+  - Optionally assert all hist_bars keys are int after init_ind_data.
+  - Document that Parallel Deferred races for PnL are mitigated by
+    _pnl_fetch_inflight; remaining risk is network disconnect mid-callback.
+
+Acceptance:
+  - Unit-style pure helper: coerce_symbol_id(x) → Optional[int]
+  - No dict lookup with non-int keys in on_tick path.
+  - Manual: app survives malformed or unexpected message shapes without crash.
+
+Dependencies: none
+Non-goals: full protobuf schema validation.
+
+---
+
+V1-T04  Volume / lot constraints from SymbolMeta
+------------------------------------------------
+Goal:
+  Reject or snap order volume to broker min/step when meta is known.
+
+Scope:
+  - OrderExecutor (or pre-check in CTraderApp) uses SymbolMeta.min_volume /
+    step_volume when available.
+  - Populate meta fully from get_symbols_by_id (already partially done).
+  - Log ⚠️ and skip open if volume invalid after snap fails.
+
+Acceptance:
+  - dry_run path still works with synthetic meta.
+  - Live path does not send volume below min or off-step when meta present.
+
+Dependencies: V1-T01 optional (volume source)
+Non-goals: full margin/risk checks.
+
+---
+
+V1-T05  Structured logging
+--------------------------
+Goal:
+  Replace ad-hoc print with a consistent logger (levels, symbol context).
+
+Scope:
+  - csys-level logger factory; capp uses it.
+  - Preserve ✅/❌/⚠️ glyphs in human-readable messages or map to levels.
+  - Optional CTRADER_LOG_LEVEL env.
+
+Acceptance:
+  - No secrets (tokens) logged.
+  - Signal cycle and EXEC lines still ops-visible.
+
+Dependencies: none
+Non-goals: log shipping, ELK.
+
+---
+
+V1-T06  Reconnect & session resilience
+--------------------------------------
+Goal:
+  Survive transient disconnect / VPN blip without full process restart.
+
+Scope:
+  - On disconnect: clear _ready; attempt reconnect + re-auth if not shutting down.
+  - After re-auth: re-subscribe spots + live trendbars; re-reconcile positions.
+  - Optional: refresh_access_token when refresh_token present and auth fails.
+  - Do not double-subscribe without unsub/guard flags.
+
+Acceptance:
+  - Simulated disconnect path re-enters live loop with positions synced.
+  - No unbounded reconnect storm (backoff).
+
+Dependencies: V1-T03 recommended first
+Non-goals: multi-host failover.
+
+---
+
+V1-T07  Pure-function unit tests (signals, stats, utils, indicators)
+--------------------------------------------------------------------
+Goal:
+  First automated test suite for pure paths (no network).
+
+Scope:
+  - pytest (add to requirements-dev or requirements.txt).
+  - Tests:
+      slope_val / compute_stencil_kinematics known series
+      fast_slow_sig, kinetic_acceleration_sig, fuse_sig truth tables
+      SanUtils averages (multi-symbol, label filter, empty)
+      decode_trendbar delta encoding
+      OrderExecutor dry_run open/close/same-side/opposite policy
+  - CI optional later.
+
+Acceptance:
+  - `pytest` green offline.
+  - No real credentials required.
+
+Dependencies: none
+Non-goals: live integration tests against demo account (see V1-T08).
+
+---
+
+V1-T08  Integration harness (demo dry_run / paper)
+--------------------------------------------------
+Goal:
+  Documented scripted run against demo with dry_run=True and optional live.
+
+Scope:
+  - scripts/ or tools/smoke_cycle.py: connect, hist seed, one live cycle log,
+    exit cleanly.
+  - Use dry_run by default.
+  - Capture last_trade_sig / last_total_trade_profits.
+
+Acceptance:
+  - README or design note: how to run smoke test.
+  - Completes hist seed without unhandled exceptions on demo.
+
+Dependencies: V1-T01, V1-T07 helpful
+Non-goals: full multi-day soak framework.
+
+
+--------------------------------------------------------------------------------
+PHASE B — Signal & strategy fidelity (extend the trading brain)
+--------------------------------------------------------------------------------
+
+V1-T09  Port true MicroWaveSIG (replace proxy)
+----------------------------------------------
+Goal:
+  Align Strategy_1 (and any consumer of micro_wave_sig) with cBot
+  CSignal.MicroWaveSIG.
+
+Scope:
+  - Port expansionCompressionRatio (from MarketMetrics / PhysicsEngine) as a
+    pure function under capp.signals or capp.metrics.
+  - MicroWaveSIG(fast_slope DTYPE, med_slope DTYPE, atr, …) per CSignal.cs.
+  - Wire into SanSignals.init_sig → t.micro_wave_sig.
+  - Keep proxy behind flag only if needed for A/B; default to true port.
+
+Acceptance:
+  - Golden cases from cBot inputs → same SIG outputs (documented table).
+  - Strategy_1 behavior change documented.
+
+Dependencies: V1-T07 (tests first recommended)
+Non-goals: full waveTide / macroWave engines.
+
+---
+
+V1-T10  Wire compute_stencil_kinematics into a strategy path
+------------------------------------------------------------
+Goal:
+  Use the superior stencil differentiator where design intended (slope30 /
+  experimental Strategy).
+
+Scope:
+  - Option A: Strategy_6 experimental: stencil on ima30 + slope30 gates.
+  - Option B: replace slope_val inputs for slope30_data with stencil val1/val2
+    under a feature flag STENCIL_SLOPE30=1.
+  - Prefer flag + Strategy_6 so Strategy_5 remains stable.
+
+Acceptance:
+  - Flag off: identical Strategy_5 behavior.
+  - Flag on / Strategy_6: deterministic outputs on fixture series.
+  - design_v1 + AGENTS note the switch.
+
+Dependencies: V1-T07
+Non-goals: full commented cBot Strategy_5 physics (breakout probability).
+
+---
+
+V1-T11  Selective MarketMetrics v1 (metrics package)
+----------------------------------------------------
+Goal:
+  Port only building blocks needed by live path / near-term strategies —
+  not the entire mq4 class.
+
+Scope:
+  - New module: capp/metrics/market_metrics.py (or csys if pure-math only;
+    prefer capp if it will consume IndData trading context).
+  - First slice (from design.txt T6 + mq4 MarketMetrics):
+      efficiency_ratio
+      expansion_compression_ratio
+      kinematic_acceleration (ratio helper)
+      atr_scale / regime_interpolate (optional)
+  - Unit tests with fixed series.
+  - Do not auto-wire into strategies until V1-T09/T10 consumers need them.
+
+Acceptance:
+  - Public pure functions with type hints + docstrings linking mq4 names.
+  - No Open API imports inside metrics module.
+
+Dependencies: V1-T07; T6 learning complete
+Non-goals: bayesianHoldScore, neuronHoldScore, full FEATURE_VECTOR pipeline
+  (those are V1-T12).
+
+---
+
+V1-T12  Hold-score / FEATURE_VECTOR exploration (optional research)
+-------------------------------------------------------------------
+Goal:
+  If product wants MQ4 hold-score exits, design a thin slice — do not dump
+  entire MarketMetrics.
+
+Scope:
+  - Spec only first: which scores affect live CLOSE/HOLD.
+  - Then implement get_feature_vector minimal fields + one hold score.
+  - Wire behind Strategy_N or a CLOSE overlay, not by default.
+
+Acceptance:
+  - Written mini-spec in this file or docs/metrics_hold.md before code.
+  - Default strategies unchanged when feature off.
+
+Dependencies: V1-T11
+Non-goals: neural nets, online learning.
+
+---
+
+V1-T13  Indicator parity: RSI / MFI / OBV (optional)
+---------------------------------------------------
+Goal:
+  Fill IndData.rsi / mfi / obv like PhyBot when strategies need them.
+
+Scope:
+  - Pure functions in csys.cindicators/{rsi,mfi,obv}.py
+  - Extend compute_indicators to write series.
+  - No strategy change until a strategy task requires them.
+
+Acceptance:
+  - Snapshot length aligns with other indicators; NaN warm-up correct.
+  - Tests vs known values for short series.
+
+Dependencies: V1-T07
+Non-goals: every TA library indicator.
+
+
+--------------------------------------------------------------------------------
+PHASE C — App structure & multi-symbol orchestration
+--------------------------------------------------------------------------------
+
+V1-T14  Extract PnL service from CTraderApp
+-------------------------------------------
+Goal:
+  Reduce ctraderapp.py size; isolate single-flight PnL.
+
+Scope:
+  - New capp/pnl.py or csys-adjacent helper used by CTraderApp:
+      PositionPnLService(api, executor, utils)
+  - Move fetch_position_pnls, _start_pnl_fetch, _build_position_pnls.
+  - CTraderApp remains orchestrator only.
+
+Acceptance:
+  - Behavior-identical single-flight semantics.
+  - Tests with fake api deferreds (optional in V1-T07 extension).
+
+Dependencies: none (nice after V1-T07)
+Non-goals: caching PnL across bars with TTL (can be follow-up).
+
+---
+
+V1-T15  Serialize per-symbol signal cycles (optional policy)
+------------------------------------------------------------
+Goal:
+  Avoid concurrent strategy evaluation races on shared last_* state / logs
+  when multiple symbols roll the same second.
+
+Scope:
+  - Deferred lock or queue: one run_signal_cycle finish at a time, or
+    per-account lock only around PnL+evaluate+execute.
+  - Document ordering: by symbol_id ascending when batched.
+
+Acceptance:
+  - Multi-symbol demo: no interleaved partial state; PnL still single-flight.
+  - Throughput acceptable on M1 with 2–10 symbols.
+
+Dependencies: V1-T14 recommended
+Non-goals: multi-process sharding.
+
+---
+
+V1-T16  bars_held / trade duration tracking
+-------------------------------------------
+Goal:
+  PhyBot IndData.BarsHeld parity for future retention / time exits.
+
+Scope:
+  - Increment bars_held while position open for symbol; reset on flat.
+  - Sync from executor book on reconcile.
+  - Expose on IndData; optional strategy gate later.
+
+Acceptance:
+  - After N closed bars in position, bars_held == N.
+  - Flat → 0.
+
+Dependencies: none
+Non-goals: time-based force close (separate strategy task).
+
+
+--------------------------------------------------------------------------------
+PHASE D — Product extensions (only when requested)
+--------------------------------------------------------------------------------
+
+V1-T17  Offline / hist-only backtest mode
+-----------------------------------------
+Goal:
+  Replay historical trendbars through compute_indicators → strategies →
+  dry_run executor without live subscription.
+
+Scope:
+  - CLI: python -m capp.backtest --symbol 1 --period M1 --weeks 4
+  - Uses get_trendbars once or load from JSON (main_twisted export).
+  - Reports trade list + simple PnL if mid prices used as fills.
+
+Acceptance:
+  - Runs without reactor live loop (or short reactor run then stop).
+  - dry_run fills only.
+
+Dependencies: V1-T01, V1-T07
+Non-goals: tick-level realism, spread model v1.
+
+---
+
+V1-T18  Explicit reverse-on-opposite policy (opt-in)
+---------------------------------------------------
+Goal:
+  Optional redesign of TASK 2: close + open opposite same cycle or next.
+
+Scope:
+  - Config: REVERSE_MODE=off|same_cycle|next_bar
+  - Default remains off (current TASK 2).
+  - Same_cycle must document broker partial-fill risks.
+
+Acceptance:
+  - Default behavior unchanged.
+  - Tests for all three modes with dry_run executor.
+
+Dependencies: V1-T07, V1-T01
+Non-goals: hedging both sides.
+
+---
+
+V1-T19  Optional protective SL/TP (opt-in redesign)
+---------------------------------------------------
+Goal:
+  Allow broker-side SL/TP only when explicitly enabled — default never.
+
+Scope:
+  - Config distances in pips or ATR multiples.
+  - OrderExecutor attaches only if enabled.
+  - Document conflict with strategy CLOSE (who wins).
+
+Acceptance:
+  - Default: zero SL/TP fields on NewOrder (current).
+  - Enabled path verified in dry_run / demo.
+
+Dependencies: V1-T01, V1-T04
+Non-goals: trailing stops v1.
+
+---
+
+V1-T20  Multi-timeframe context (research)
+------------------------------------------
+Goal:
+  Optional higher-TF bias (e.g. H1 slope) gating M1 entries.
+
+Scope:
+  - Second IndData or compact series per symbol for H1.
+  - init_sig or strategy reads bias_sig.
+  - Subscribe extra trendbar period only if configured.
+
+Acceptance:
+  - M1-only default unchanged.
+  - Document memory/capacity impact.
+
+Dependencies: V1-T01, V1-T11 optional
+Non-goals: full multi-TF wave engine.
+
+---
+
+V1-T21  Retire or quarantine incomplete entry points
+----------------------------------------------------
+Goal:
+  Reduce confusion from main_fastapi.py / basic.py.
+
+Scope:
+  - Mark main_fastapi.py experimental in header; or move to experiments/.
+  - basic.py → examples/raw_sdk_connect.py or delete if redundant.
+  - Prefer main.py + main_twisted.py only in docs.
+
+Acceptance:
+  - README/AGENTS list only supported entry points.
+
+Dependencies: V1-T02
+Non-goals: finishing FastAPI integration unless product asks.
+
+
+--------------------------------------------------------------------------------
+PHASE E — Observability & ops
+--------------------------------------------------------------------------------
+
+V1-T22  Cycle telemetry snapshot
+--------------------------------
+Goal:
+  Persist last cycle diagnostics for debugging (no heavy DB required).
+
+Scope:
+  - Optional JSONL log: timestamp, symbol, SIG, fsig30, slope30_sig,
+    avg_pnl, atr, adx, action from ExecutionResult.
+  - Env CTRADER_TELEMETRY_PATH=./logs/cycles.jsonl
+
+Acceptance:
+  - Disabled by default.
+  - When on, one line per finished live cycle.
+
+Dependencies: V1-T05 recommended
+Non-goals: Grafana dashboards.
+
+---
+
+V1-T23  Health endpoint (optional, Twisted)
+-------------------------------------------
+Goal:
+  Lightweight status for process supervision.
+
+Scope:
+  - Extend main_twisted or small resource on reactor:
+      GET /health → {ready, symbols, open_positions, last_bar_age}
+  - No trading mutations.
+
+Acceptance:
+  - Works alongside trading reactor without blocking signal path.
+
+Dependencies: V1-T06 helpful
+Non-goals: full REST trading API.
+
+
+================================================================================
+5. RECOMMENDED IMPLEMENTATION ORDER
+================================================================================
+
+  Wave 1 (stabilize):     V1-T01, V1-T02, V1-T03, V1-T07
+  Wave 2 (ops safety):    V1-T04, V1-T05, V1-T06, V1-T08
+  Wave 3 (strategy depth): V1-T09, V1-T10, V1-T11  then optional V1-T12/T13
+  Wave 4 (structure):     V1-T14, V1-T15, V1-T16
+  Wave 5 (product):       V1-T17+ on demand
+
+Critical path for safe extension of strategies:
+  V1-T07 → V1-T09/T10 → live demo (V1-T08)
+
+
+================================================================================
+6. INVARIANTS (must hold unless a task explicitly redesigns them)
+================================================================================
+
+  I1  csys never imports capp.
+  I2  Canonical types only in csys.ctrader_api.ctypes (+ facade).
+  I3  Indicators + init_sig once per bar cycle.
+  I4  Max one open position per symbol under trade label.
+  I5  No SL/TP unless V1-T19 enabled.
+  I6  Opposite signal closes only (no same-cycle reverse) unless V1-T18.
+  I7  Series oldest→newest; MQL shift via mql_at.
+  I8  Trading path uses Twisted Deferreds, not asyncio.
+  I9  Secrets only in .env; never logged or committed.
+  I10 Prefer matching mq4/cBot named functions on the live path over bloat.
+
+
+================================================================================
+7. MODULE ↔ RESPONSIBILITY MAP (quick reference)
+================================================================================
+
+  Concern                 Path
+  ----------------------  -------------------------------------------------
+  Start trading           main.py → capp.CTraderApp
+  Connect / protos        csys.ctrader_api.client.CTraderOpenAPI
+  Config                  csys.ctrader_api.config.load_config
+  Types                   csys.ctypes / csys.ctrader_api.ctypes
+  Indicators              csys.cindicators.snapshot.compute_indicators
+  Signals                 capp.signals.signals.SanSignals.init_sig
+  Stats / slopes          capp.signals.stats
+  Strategies              capp.strategies.strategies.CStrategies.evaluate
+  Avg float PnL           capp.utils.SanUtils.get_total_trade_profits
+  PnL fetch orchestration capp.ctraderapp.CTraderApp.fetch_position_pnls
+  Orders                  csys.ctrader_api.execution.OrderExecutor
+  Bar → trade             capp.ctraderapp.CTraderApp.run_signal_cycle
+  Physics / cov-det       capp.physics.metrics.covariance_matrix_determinant
+  Lifecycle diagram       ctraderapp_flow.txt
+  Historical design log   design.txt
+  Forward blueprint       design_v1.txt  (this file)
+
+
+================================================================================
+8. DEFINITION OF DONE FOR ANY NEW TASK
+================================================================================
+
+  - Touches only the layer that owns the concern (csys vs capp).
+  - Preserves once-per-cycle and single-trade invariants unless redesign task.
+  - Updates AGENTS.md and this task's Status line when complete.
+  - Adds pure tests when logic is pure (V1-T07 standard).
+  - Documents intentional deviations from mq4/cBot in module docstring.
+  - No secrets in repo; dry_run path remains usable for local checks.
+
+================================================================================
+9. TASKS
+================================================================================
+TASK V1-T24:  [DONE]
+
+create a new layer(folder) within capp, capp/physics
+create two modules within, metrics and math
+
+create a new function that takes two series A and B of float values, which are mostly time series based and returns one float value.
+Series A = [a1,a2,a3 ...]
+Series B = [b1,b2,b3 ...]
+int N = number or previous periods
+
+
+a1 and  b1 are most recent values at time t1 and a2 and b2 are prev time period values at t2.
+
+For time t1 generate a covariance matrix of the two series [[var(A) cov(A,B],[cov(A,B) var(B)]]
+calculate its determinant and output return it.
+
+usage:
+This function will be called to calculate the determinant for each prev completed bar.
+So every period will have a determinant based on previous N periods.
+
+Delivered:
+  capp/physics/{math,metrics}.py — NumPy np.cov(ddof=1) + np.linalg.det
+  Public: covariance_matrix_determinant(A, B, n)  (oldest→newest; window=last n)
+  Deps: numpy>=1.26, scipy>=1.11 (SciPy reserved for later stats/probability ports)
+  Not wired into bar cycle (call site is a later consumer task).
+
+================================================================================
+10. TASK STATUS BOARD (update as work lands)
+================================================================================
+
+  Task     Phase   Status      Title
+  -------  ------  ----------  -----------------------------------------------
+  V1-T01   A       PENDING     Config surface for runtime parameters
+  V1-T02   A       PENDING     Documentation sync
+  V1-T03   A       PENDING     Message / symbolId hardening
+  V1-T04   A       PENDING     Volume / lot constraints
+  V1-T05   A       PENDING     Structured logging
+  V1-T06   A       PENDING     Reconnect & session resilience
+  V1-T07   A       PENDING     Pure-function unit tests
+  V1-T08   A       PENDING     Integration harness (demo)
+  V1-T09   B       PENDING     Port true MicroWaveSIG
+  V1-T10   B       PENDING     Wire stencil kinematics strategy path
+  V1-T11   B       PENDING     Selective MarketMetrics v1
+  V1-T12   B       PENDING     Hold-score / FEATURE_VECTOR (opt)
+  V1-T13   B       PENDING     RSI / MFI / OBV indicators (opt)
+  V1-T14   C       PENDING     Extract PnL service
+  V1-T15   C       PENDING     Serialize multi-symbol cycles (opt)
+  V1-T16   C       PENDING     bars_held tracking
+  V1-T17   D       PENDING     Offline backtest mode
+  V1-T18   D       PENDING     Reverse-on-opposite policy (opt-in)
+  V1-T19   D       PENDING     Optional SL/TP (opt-in)
+  V1-T20   D       PENDING     Multi-timeframe context
+  V1-T21   D       PENDING     Quarantine incomplete entry points
+  V1-T22   E       PENDING     Cycle telemetry snapshot
+  V1-T23   E       PENDING     Health endpoint
+  V1-T24   B       DONE        capp/physics cov-matrix determinant (NumPy)
+
+Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
+
+
+================================================================================
+11. APPENDIX — design.txt residual notes (for implementers)
+================================================================================
+
+A. Profit average semantics (T7)
+   multi-asset: mean over all open labeled positions (sum/count), not per-symbol
+   unless get_symbol_trade_profits / all_symbols=False.
+
+B. Period field (T9)
+   IndData.period / current_period store **seconds** (M1 → 60), not MQL period
+   enum. period_seconds("M1") helper is canonical.
+
+C. PnL ownership (T10)
+   Network: CTraderApp (or future PositionPnLService).
+   Math: SanUtils only. Never put reconcile inside utils.py.
+
+D. Deferred race (T11)
+   Prefer sequential reconcile → unrealized PnL with unique clientMsgId and
+   single-flight master Deferred. Joiner Deferreds must not chain strategy
+   transforms onto the master (see _share_pnl_result).
+
+E. Migration filter
+   Port from HSIG::initSIG / SanSignals / CStrategies live composites only.
+   Ignore dead commented strategy blocks and unused San* helpers unless a
+   V1 task names them.
+
+
+================================================================================
+End of design_v1.txt
+================================================================================

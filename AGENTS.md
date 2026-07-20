@@ -21,7 +21,7 @@ csys  ↛  capp     # system must NOT import business
 | Layer | Package | Responsibility |
 |-------|---------|----------------|
 | **System** | `csys/` | Open API proto client, config, types, indicators, order plumbing |
-| **App** | `capp/` | Signals, strategies, bar-cycle orchestration (`CTraderApp`) |
+| **App** | `capp/` | Signals, strategies, physics metrics, bar-cycle orchestration (`CTraderApp`) |
 
 ### Layout
 
@@ -34,6 +34,7 @@ capp/
   ctraderapp.py         # CTraderApp
   signals/             # SanSignals, stats (slopeVal / stencil)
   strategies/          # Strategy_1..4
+  physics/             # NumPy/SciPy math + series metrics (V1-T24+)
 main.py                # primary entry
 main_twisted.py        # optional OHLCV HTTP (Twisted)
 main_fastapi.py        # incomplete experiment — prefer main.py
@@ -76,6 +77,7 @@ from csys.cindicators import compute_indicators
 # Application layer
 from capp.signals import SanSignals
 from capp.strategies import CStrategies
+from capp.physics import covariance_matrix_determinant
 from capp import CTraderApp
 ```
 
@@ -159,6 +161,13 @@ Loaded by `csys.ctrader_api.config.load_config()`.
 - Strategy 1 (default): micWave alignment → BUY/SELL else CLOSE
 - Strategies 2–4: baseSlope / slope30 variants + optional profit close
 
+**`capp.physics`**
+
+- NumPy/SciPy foundation for analysis ports from `code_references` (Stats / MarketMetrics / Physics)
+- `math`: `covariance_matrix_2x2`, `matrix_determinant`
+- `metrics`: `covariance_matrix_determinant(A, B, n)` — det of 2×2 sample cov over last `n` bars
+- Series: **oldest → newest**; no Open API / Twisted imports
+
 **`capp.ctraderapp`**
 
 - Lifecycle: spots → symbols → hist seed → reconcile → live trendbars → signal cycle
@@ -199,6 +208,7 @@ Loaded by `csys.ctrader_api.config.load_config()`.
 | Indicators | `csys.cindicators.snapshot.compute_indicators` |
 | Signals | `capp.signals.signals.SanSignals.init_sig` |
 | Strategies | `capp.strategies.strategies.CStrategies.evaluate` |
+| Physics metrics | `capp.physics.metrics.covariance_matrix_determinant` |
 
 ## Dependencies
 
@@ -207,4 +217,6 @@ ctrader-open-api==0.9.2
 python-dotenv>=1.0.0
 twisted>=24.3.0
 inputimeout>=1.0.4
+numpy>=1.26.0
+scipy>=1.11.0
 ```

@@ -4,6 +4,14 @@
 ├── capp
 │   ├── ctraderapp.py
 │   ├── __init__.py
+│   ├── physics
+│   │   ├── __init__.py
+│   │   ├── math.py
+│   │   ├── metrics.py
+│   │   └── __pycache__
+│   │       ├── __init__.cpython-313.pyc
+│   │       ├── math.cpython-313.pyc
+│   │       └── metrics.cpython-313.pyc
 │   ├── __pycache__
 │   │   ├── ctraderapp.cpython-311.pyc
 │   │   ├── ctraderapp.cpython-313.pyc
@@ -99,6 +107,7 @@
 │       └── __init__.cpython-313.pyc
 ├── ctraderapp_flow.txt
 ├── design.txt
+├── design_v1.txt
 ├── main_fastapi.py
 ├── main.py
 ├── main_twisted.py
@@ -106,4 +115,4 @@
 ├── requirements.txt
 └── tree.txt
 
-16 directories, 91 files
+18 directories, 98 files
