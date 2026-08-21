@@ -96,6 +96,10 @@ class CTraderOpenAPI:
 
     def connect(self) -> None:
         """Start the TCP connection to cTrader."""
+        print(
+            f"Connecting to {self.config.protobuf_host}:{self.config.protobuf_port} "
+            f"(host={self.config.host}, account={self.config.account_id})..."
+        )
         self._client.startService()
 
     def run(self) -> None:
@@ -489,13 +493,17 @@ class CTraderOpenAPI:
 
     def _on_connected(self, _client: Client) -> None:
         # Auth responses are handled in _on_message, not via the send() deferred.
+        print("✅ TCP/TLS connected — authenticating application...")
         self._authenticate_application()
 
     def _on_disconnected(self, _client: Client, reason: Any) -> None:
         self._ready = False
-        if self._shutting_down or not self.on_disconnected:
+        if self._shutting_down:
             return
-        self.on_disconnected(reason)
+        msg = reason.getErrorMessage() if hasattr(reason, "getErrorMessage") else str(reason)
+        print(f"⚠️  Disconnected: {msg}")
+        if self.on_disconnected:
+            self.on_disconnected(reason)
 
     def _on_message(self, _client: Client, message: Any) -> None:
         payload_type = message.payloadType
@@ -504,6 +512,7 @@ class CTraderOpenAPI:
             return
 
         if payload_type == ProtoOAApplicationAuthRes().payloadType:
+            print("✅ Application authenticated — authenticating account...")
             self._authenticate_account()
             return
 
@@ -523,8 +532,16 @@ class CTraderOpenAPI:
             self.on_message(Protobuf.extract(message))
 
     def _emit_error(self, failure: Any) -> None:
+        code = getattr(failure, "errorCode", "") or ""
+        desc = getattr(failure, "description", "") or ""
+        print(f"❌ Open API error: {code} {desc}".rstrip())
         if self.on_error:
             self.on_error(failure)
+        # Handshake failures used to look like a stall: on_ready never fires,
+        # ClientService retries forever, and nothing was logged.
+        if not self._ready and reactor.running:
+            print("❌ Auth failed before ready — stopping")
+            reactor.callLater(0, reactor.stop)
 
     @staticmethod
     def _timestamp_now() -> int:
