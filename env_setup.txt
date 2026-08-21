@@ -1,0 +1,27 @@
+# generate an conda env file:
+conda env export --name my_env > environment.yml
+
+# regenerate conda env
+conda env create -f environment.yml
+
+# requirements.txt
+pip freeze | grep -v "@ file://" > requirements.txt
+
+pip install -r requirements.txt
+
+
+
+# .env
+
+CTRADER_CLIENT_ID=21694_i8c9dqpfJoM6jlJrZYgNVnHEetZfU3tfmrxnhLL8OxAow2fYXc
+CTRADER_CLIENT_SECRET=FoWYcP6p4djfhKZVRGqwe3gNMCN5qrtUjXCEAL9POyngn7oBsp
+CTRADER_ACCESS_TOKEN=mHxLJPW5nYZYr4BscX2qSOB7MYTxFsZ8lYohDvqCf5Y
+CTRADER_REFRESH_TOKEN=WSip54E8nX30zxMWD1gKBZzGYy7Q-06C7pmiEd2utF0
+CTRADER_ACCOUNT_ID=48390366
+
+# https://api.spotware.com/connect/tradingaccounts?access_token=stekKvFrbuNuC1CXmXRDVXVxhFa1fAaOOHCULgRWXw4
+# https://openapi.ctrader.com/apps/21694/playground
+
+user: {"data":{"userId":9066191,"nickname":null,"email":null}}
+
+account: {"data":[{"accountId":48390366,"accountNumber":10646472,"live":false,"brokerName":"FxPro","brokerTitle":"FxPro","depositCurrency":"USD","traderRegistrationTimestamp":1787293887736,"traderAccountType":"HEDGED","leverage":10000,"leverageInCents":1000000,"balance":2100000,"deleted":false,"accountStatus":"ACTIVE","swapFree":false,"moneyDigits":2,"brokerAccountDisplayName":null},{"accountId":48390643,"accountNumber":10646473,"live":false,"brokerName":"FxPro","brokerTitle":"FxPro","depositCurrency":"USD","traderRegistrationTimestamp":1787295714362,"traderAccountType":"HEDGED","leverage":10000,"leverageInCents":1000000,"balance":1000000,"deleted":false,"accountStatus":"ACTIVE","swapFree":false,"moneyDigits":2,"brokerAccountDisplayName":null}]}
