@@ -9,17 +9,26 @@ pip freeze | grep -v "@ file://" > requirements.txt
 
 pip install -r requirements.txt
 
+## to run the app
+python main.py --dry-run            # simulated orders
+CTRADER_DRY_RUN=1 python main.py    # same; can also go in .env
+python main.py                      # live, unchanged
+
+## claude
+
+claude -n ctrader
+claude --resume "ctrader"
 
 
 # .env
 
 CTRADER_CLIENT_ID=21694_i8c9dqpfJoM6jlJrZYgNVnHEetZfU3tfmrxnhLL8OxAow2fYXc
 CTRADER_CLIENT_SECRET=FoWYcP6p4djfhKZVRGqwe3gNMCN5qrtUjXCEAL9POyngn7oBsp
-CTRADER_ACCESS_TOKEN=mHxLJPW5nYZYr4BscX2qSOB7MYTxFsZ8lYohDvqCf5Y
-CTRADER_REFRESH_TOKEN=WSip54E8nX30zxMWD1gKBZzGYy7Q-06C7pmiEd2utF0
+CTRADER_ACCESS_TOKEN=lnYBTRpHzpodmk-OUPF0RuqVHEKTo_30HBKG39zf6YI
+CTRADER_REFRESH_TOKEN=mOyYDFfKXRfrLhAtqi20n1-b1B1uSQGWrKApZTAXpqs
 CTRADER_ACCOUNT_ID=48390366
 
-# https://api.spotware.com/connect/tradingaccounts?access_token=stekKvFrbuNuC1CXmXRDVXVxhFa1fAaOOHCULgRWXw4
+# https://api.spotware.com/connect/tradingaccounts?access_token=lnYBTRpHzpodmk-OUPF0RuqVHEKTo_30HBKG39zf6YI
 # https://openapi.ctrader.com/apps/21694/playground
 
 user: {"data":{"userId":9066191,"nickname":null,"email":null}}

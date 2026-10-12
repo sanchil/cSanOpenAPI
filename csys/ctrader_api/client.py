@@ -30,6 +30,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAOrderListByPositionIdReq,
     ProtoOAReconcileReq,
     ProtoOASubscribeLiveTrendbarReq,
+    ProtoOASpotEvent,
     ProtoOASubscribeSpotsReq,
     ProtoOASymbolByIdReq,
     ProtoOASymbolCategoryListReq,
@@ -61,6 +62,17 @@ def scale_money(value: int | float, money_digits: int = 0) -> float:
     if digits <= 0:
         return float(value)
     return float(value) / (10.0 ** digits)
+
+
+def is_spot_event(message: Any) -> bool:
+    """True only for ProtoOASpotEvent (bid/ask + live trendbar pushes).
+
+    The SDK hands *every* inbound message to the message callback — including
+    RPC responses such as ProtoOAGetTrendbarsRes (scalar symbolId + trendbar[])
+    and events such as ProtoOASymbolChangedEvent (repeated symbolId) — before
+    the request Deferred fires. Price handling must ignore all of those.
+    """
+    return isinstance(message, ProtoOASpotEvent)
 
 
 class CTraderOpenAPI:

@@ -22,19 +22,28 @@ if TYPE_CHECKING:
 # Periods matching IndData.ima* fields
 IMA_PERIODS: Sequence[int] = (5, 14, 30, 60, 120, 240, 500)
 
-DEFAULT_ATR_PERIOD = 14
-DEFAULT_ADX_PERIOD = 14
-DEFAULT_STD_PERIOD = 20
+# MQ4 parity (SanStrategies::RefreshPhysicsData): every iMA is MODE_SMMA;
+# ATR / ADX / StdDev use noOfCandles = 21; iStdDev is MODE_EMA; iATR is a
+# simple mean of TR. ADX stays Wilder (MT4's EMA-based iADX is not ported —
+# ADX is diagnostic only on the live path).
+DEFAULT_MA_METHOD = "smma"
+DEFAULT_ATR_PERIOD = 21
+DEFAULT_ATR_METHOD = "sma"
+DEFAULT_ADX_PERIOD = 21
+DEFAULT_STD_PERIOD = 21
+DEFAULT_STD_MA_METHOD = "ema"
 
 
 def compute_indicators(
     ind: "IndData",
     *,
     size: Optional[int] = None,
-    ma_method: str = "sma",
+    ma_method: str = DEFAULT_MA_METHOD,
     atr_period: int = DEFAULT_ATR_PERIOD,
+    atr_method: str = DEFAULT_ATR_METHOD,
     adx_period: int = DEFAULT_ADX_PERIOD,
     std_period: int = DEFAULT_STD_PERIOD,
+    std_ma_method: str = DEFAULT_STD_MA_METHOD,
     std_ddof: int = 0,
 ) -> "IndData":
     """
@@ -48,9 +57,13 @@ def compute_indicators(
         Output length for every indicator series. Default = number of bars
         currently in IndData (fits the container's rolling window).
     ma_method :
-        'sma' | 'ema' | 'wma' for ima* fields.
+        'smma' (MQ4 default) | 'sma' | 'ema' | 'wma' for ima* fields.
     atr_period / adx_period / std_period :
         Lookbacks for ATR, ADX/DI, and StdDev.
+    atr_method :
+        'sma' (MQL4 iATR) | 'wilder'.
+    std_ma_method :
+        MA the StdDev deviations are measured from ('ema' = MQL4 MODE_EMA).
     std_ddof :
         0 = population std (Bollinger-style), 1 = sample std.
 
@@ -90,7 +103,7 @@ def compute_indicators(
     # --- ATR ---
     write_series(
         ind.atr,
-        atr(highs, lows, closes, period=atr_period, size=out_size),
+        atr(highs, lows, closes, period=atr_period, size=out_size, method=atr_method),
     )
 
     # --- ADX / DI+ / DI- ---
@@ -102,8 +115,8 @@ def compute_indicators(
     write_series(ind.adx_minus, di_m)
 
     # --- StdDev on close / open ---
-    std_c = stddev(closes, period=std_period, size=out_size, ddof=std_ddof)
-    std_o = stddev(opens, period=std_period, size=out_size, ddof=std_ddof)
+    std_c = stddev(closes, period=std_period, size=out_size, ddof=std_ddof, ma_method=std_ma_method)
+    std_o = stddev(opens, period=std_period, size=out_size, ddof=std_ddof, ma_method=std_ma_method)
     write_series(ind.std_close, std_c)
     write_series(ind.std_open, std_o)
 

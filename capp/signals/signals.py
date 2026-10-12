@@ -19,6 +19,10 @@ from csys.ctypes import IndData, SIG, T_SIG
 
 from .stats import mql_at, slope_val
 
+# MQ4 SS::update slope windows (fast, wide) for baseSlope / slope30
+SLOPE_DENOM = 5
+SLOPE_DENOM_WIDE = 21
+
 
 class SanSignals:
     """Signal generators operating on an IndData snapshot (once per cycle)."""
@@ -156,12 +160,15 @@ class SanSignals:
         point = float(getattr(ind, "point", 0.0) or 0.0)
 
         # --- slopes on MAs ---
+        # MQ4 SS::update: slopeSIGData(ima, 5, 21, 1) → slopeVal(ima, 5, 21).
+        # The kinetic thresholds below were tuned for these windows (cBot's
+        # 3/5 defaults are a divergence, not the reference).
         t.base_slope_data = slope_val(
-            ind.ima240, slope_denom=3, slope_denom_wide=5, shift=sh,
-            pip_size=pip, point=point,
+            ind.ima240, slope_denom=SLOPE_DENOM, slope_denom_wide=SLOPE_DENOM_WIDE,
+            shift=sh, pip_size=pip, point=point,
         )
         t.slope30_data = slope_val(
-            ind.ima30, slope_denom=3, slope_denom_wide=5, shift=sh,
+            ind.ima30, slope_denom=SLOPE_DENOM, slope_denom_wide=SLOPE_DENOM_WIDE, shift=sh,
             pip_size=pip, point=point,
         )
 

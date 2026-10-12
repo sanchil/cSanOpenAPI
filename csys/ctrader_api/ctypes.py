@@ -28,6 +28,10 @@ from typing import Any, Deque, Dict, Iterable, Optional
 # cTrader relative price scale: prices are in 1/100000 of a price unit.
 PRICE_SCALE = 100_000
 DEFAULT_BAR_CAPACITY = 500
+# Bars to seed/hold per symbol for the live app. Indicators are recomputed
+# from IndData every cycle and SMMA is recursive, so the window must be several
+# times the longest MA (500) for ima240/ima500 to converge to MQ4's values.
+DEFAULT_HISTORY_BARS = 2000
 
 # Bar period name → minutes (PhyBot GetMinutes / mq4 _Period style)
 PERIOD_MINUTES: Dict[str, int] = {
@@ -601,6 +605,7 @@ class IndData:
 __all__ = [
     "PRICE_SCALE",
     "DEFAULT_BAR_CAPACITY",
+    "DEFAULT_HISTORY_BARS",
     "PERIOD_MINUTES",
     "SIG",
     "DECAY_STRATEGY",

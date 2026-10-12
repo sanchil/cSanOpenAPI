@@ -1,5 +1,5 @@
 """
-Moving Average indicators: SMA, EMA, WMA, and a generic `ma` dispatcher.
+Moving Average indicators: SMA, EMA, SMMA, WMA, and a generic `ma` dispatcher.
 
 All functions take a raw price series (oldest → newest) and return a series of
 indicator values of length `size` (default: min(len(data), IndData capacity)).
@@ -66,6 +66,35 @@ def ema(
     return finalize(full, size)
 
 
+def smma(
+    data: SeriesIn,
+    period: int = 14,
+    size: Optional[int] = None,
+) -> SeriesOut:
+    """Smoothed Moving Average — MQL4 iMA(..., MODE_SMMA, ...).
+
+    Seeded with SMA of the first `period` bars, then
+    smma[i] = (smma[i-1] * (period - 1) + price[i]) / period
+    (identical to Wilder's smoothing / RMA).
+
+    Recursive: values depend on all prior bars, so feed a history several
+    times longer than `period` for the recent values to converge.
+    """
+    if period <= 0:
+        raise ValueError("period must be >= 1")
+
+    src = to_floats(data)
+    n = len(src)
+    full = [NAN] * n
+    if n < period:
+        return finalize(full, size)
+
+    full[period - 1] = sum(src[:period]) / period
+    for i in range(period, n):
+        full[i] = (full[i - 1] * (period - 1) + src[i]) / period
+    return finalize(full, size)
+
+
 def wma(
     data: SeriesIn,
     period: int = 14,
@@ -98,21 +127,24 @@ def ma(
 ) -> SeriesOut:
     """Generic moving average dispatcher.
 
-    method: 'sma' | 'ema' | 'wma' (case-insensitive)
+    method: 'sma' | 'ema' | 'smma' | 'wma' (case-insensitive)
     """
     m = (method or "sma").strip().lower()
     if m in ("sma", "simple", "s"):
         return sma(data, period, size)
     if m in ("ema", "exponential", "e", "exp"):
         return ema(data, period, size)
+    if m in ("smma", "smoothed", "rma", "wilder"):
+        return smma(data, period, size)
     if m in ("wma", "weighted", "w", "lwma"):
         return wma(data, period, size)
-    raise ValueError(f"Unknown MA method: {method!r} (use sma|ema|wma)")
+    raise ValueError(f"Unknown MA method: {method!r} (use sma|ema|smma|wma)")
 
 
 # Convenience aliases matching common TA naming
 simple_moving_average = sma
 exponential_moving_average = ema
+smoothed_moving_average = smma
 weighted_moving_average = wma
 moving_average = ma
 

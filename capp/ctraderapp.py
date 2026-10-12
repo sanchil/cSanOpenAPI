@@ -6,9 +6,9 @@ from twisted.internet import defer
 
 # System layer
 from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
-from csys.ctrader_api.client import scale_money
+from csys.ctrader_api.client import is_spot_event, scale_money
 from csys.ctypes import (
-    DEFAULT_BAR_CAPACITY,
+    DEFAULT_HISTORY_BARS,
     IndData,
     SIG,
     SymbolMeta,
@@ -55,7 +55,7 @@ class CTraderApp:
         active_strategy: int = 1,
         *,
         trade_volume: float = 10000.0,
-        trade_label: str = "GrokApp",
+        trade_label: str = "cSanOpenAPI",
         trading_enabled: bool = True,
         dry_run: bool = False,
     ):
@@ -74,7 +74,8 @@ class CTraderApp:
         self.current_bar: Dict[int, dict] = {}
         self.bar_interval = 60  # seconds between synthetic bars (M1)
         self.bar_period = "M1"
-        self.bar_count = DEFAULT_BAR_CAPACITY
+        # Long window so SMMA ima240/ima500 converge (MQ4 MAs see full history)
+        self.bar_count = DEFAULT_HISTORY_BARS
         self.last_bar_time: Optional[float] = None
         self.fxpair_arr = [1, 4]  # EURUSD, USDJPY (demo symbol ids; broker-dependent)
         # Track open-minute of the last committed live bar per symbol
@@ -363,10 +364,13 @@ class CTraderApp:
 
     def on_tick(self, message):
         """Handle spot events (live prices / trendbars)."""
-        if not hasattr(message, "symbolId"):
+        # RPC responses (e.g. GetTrendbarsRes) and other events (e.g.
+        # SymbolChangedEvent with repeated symbolId) also reach on_message;
+        # only ProtoOASpotEvent carries live prices.
+        if not is_spot_event(message):
             return
 
-        symbol_id = message.symbolId
+        symbol_id = int(message.symbolId)
         if symbol_id not in self.hist_bars:
             return
 

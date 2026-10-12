@@ -7,6 +7,7 @@ re-exports them so design.txt's ``ctypes → csys`` mapping is explicit.
 
 from csys.ctrader_api.ctypes import (  # noqa: F401
     DEFAULT_BAR_CAPACITY,
+    DEFAULT_HISTORY_BARS,
     DECAY_STRATEGY,
     DTYPE,
     PERIOD_MINUTES,
@@ -26,6 +27,7 @@ from csys.ctrader_api.ctypes import (  # noqa: F401
 __all__ = [
     "PRICE_SCALE",
     "DEFAULT_BAR_CAPACITY",
+    "DEFAULT_HISTORY_BARS",
     "PERIOD_MINUTES",
     "SIG",
     "DECAY_STRATEGY",

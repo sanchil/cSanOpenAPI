@@ -28,6 +28,8 @@ from .ma import (
     moving_average,
     simple_moving_average,
     sma,
+    smma,
+    smoothed_moving_average,
     weighted_moving_average,
     wma,
 )
@@ -47,6 +49,8 @@ __all__ = [
     # MA
     "sma",
     "ema",
+    "smma",
+    "smoothed_moving_average",
     "wma",
     "ma",
     "simple_moving_average",

@@ -20,6 +20,7 @@ def stddev(
     size: Optional[int] = None,
     *,
     ddof: int = 0,
+    ma_method: str = "sma",
 ) -> SeriesOut:
     """
     Rolling standard deviation.
@@ -35,6 +36,11 @@ def stddev(
     ddof :
         Delta degrees of freedom. 0 = population (TA / Bollinger default),
         1 = sample stddev.
+    ma_method :
+        Centre of the deviations. 'sma' = window mean (classic stddev).
+        Any other ma() method reproduces MQL4 iStdDev(..., ma_method, ...):
+          std[i] = sqrt( sum_{k<period} (x[i-k] - MA[i])^2 / (period - ddof) )
+        where MA[i] is that method's moving average at bar i.
     """
     if period <= 0:
         raise ValueError("period must be >= 1")
@@ -45,6 +51,22 @@ def stddev(
     n = len(src)
     full = [NAN] * n
     if n < period:
+        return finalize(full, size)
+
+    if (ma_method or "sma").strip().lower() not in ("sma", "simple", "s"):
+        from .ma import ma
+
+        centre = ma(src, period=period, size=n, method=ma_method)
+        denom = period - ddof
+        for i in range(period - 1, n):
+            m = centre[i]
+            if m != m:  # MA not ready
+                continue
+            acc = 0.0
+            for k in range(i - period + 1, i + 1):
+                d = src[k] - m
+                acc += d * d
+            full[i] = math.sqrt(acc / denom)
         return finalize(full, size)
 
     # Incremental Welford-friendly approach via rolling sum / sumsq
@@ -85,7 +107,9 @@ def stddev_of_ma(
     """
     from .ma import ma
 
-    ma_series = ma(data, period=ma_period, size=None, method=ma_method)
+    # Explicit sizes: size=None would cap at DEFAULT_SERIES_CAPACITY (500)
+    src = to_floats(data)
+    ma_series = ma(src, period=ma_period, size=len(src), method=ma_method)
     # Drop leading NaNs for stddev math? Keep alignment — stddev treats NaN poorly.
     # Replace leading NaNs with forward-fill of first finite would bias; keep
     # length-aligned by only computing where MA is finite via a cleaned series.
@@ -101,7 +125,7 @@ def stddev_of_ma(
             # nulling positions where MA was NaN.
             cleaned.append(last if last == last else 0.0)
 
-    raw_std = stddev(cleaned, period=std_period, size=None, ddof=ddof)
+    raw_std = stddev(cleaned, period=std_period, size=len(cleaned), ddof=ddof)
     # Null out bars where MA was not ready
     for i, v in enumerate(ma_series):
         if v != v:

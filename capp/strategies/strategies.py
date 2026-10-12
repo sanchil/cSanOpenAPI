@@ -9,7 +9,8 @@ CTraderApp calls ``evaluate(ind)`` once per bar after indicators + init_sig.
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 from csys.ctypes import IndData, SIG, T_SIG
 from capp.signals import SanSignals
@@ -24,12 +25,17 @@ class CStrategies:
         *,
         active: int = 1,
         profit_close_threshold: float = 4.0,
+        mq4_profit_close_threshold: float = 2.0,
     ) -> None:
         self.signals = signals or SanSignals()
-        self.active = int(active)  # Strategy_1 .. Strategy_5
+        self.active = int(active)  # Strategy_1 .. Strategy_6
         self.profit_close_threshold = float(profit_close_threshold)
+        # Strategy_6: HSIG::initSIG uses getTotalTradeProfits(1002) >= 2.0
+        self.mq4_profit_close_threshold = float(mq4_profit_close_threshold)
         self.last_t_sig: Optional[T_SIG] = None
         self.last_sig: SIG = SIG.NOSIG
+        # Strategy_6 sticky HSIG state per symbol_id (see strategy_6)
+        self._hsig_state: Dict[int, _HSigState] = {}
 
     # ------------------------------------------------------------------ API
     def evaluate(
@@ -49,7 +55,9 @@ class CStrategies:
         t_sig = self.signals.init_sig(ind, shift=shift)
         self.last_t_sig = t_sig
         n = self.active if strategy is None else int(strategy)
-        sig = self.run_strategy(n, t_sig, total_trade_profits)
+        sig = self.run_strategy(
+            n, t_sig, total_trade_profits, symbol_id=int(getattr(ind, "symbol_id", 0) or 0)
+        )
         t_sig.strategy_sig = sig
         t_sig.open_sig = sig
         self.last_sig = sig
@@ -60,6 +68,8 @@ class CStrategies:
         n: int,
         t_sig: T_SIG,
         total_trade_profits: float = 0.0,
+        *,
+        symbol_id: int = 0,
     ) -> SIG:
         dispatch = {
             1: self.strategy_1,
@@ -67,10 +77,13 @@ class CStrategies:
             3: self.strategy_3,
             4: self.strategy_4,
             5: self.strategy_5,
+            6: self.strategy_6,
         }
         fn = dispatch.get(int(n), self.strategy_1)
         if n == 1:
             return fn(t_sig)
+        if n == 6:
+            return fn(t_sig, total_trade_profits, symbol_id=symbol_id)
         return fn(t_sig, total_trade_profits)
 
     # -------------------------------------------------------------- strategies
@@ -172,3 +185,79 @@ class CStrategies:
         return SIG.NOSIG
 
     Strategy_5 = strategy_5
+
+    def strategy_6(
+        self,
+        t_sig: T_SIG,
+        total_trade_profits: float = 0.0,
+        *,
+        symbol_id: int = 0,
+    ) -> SIG:
+        """
+        MQ4 live path — HSIG::initSIG "baseSlopeSIG Strategy"
+        → setSIGForStrategy_v3 → SanStrategies::dominantSIG (code_base_v98).
+
+        Composite (compositeSIG_1 / composite_CloseSIG_1):
+          - baseSlope != CLOSE and fastSIG == HOLD        → close
+          - baseSlope == CLOSE and avg PnL >= threshold   → close (2.0)
+          - baseSlope BUY/SELL                            → open baseSlope
+            (no fsig alignment gate, unlike Strategy_2/3)
+          - otherwise                                     → unchanged
+        setSIGForStrategy_v3: close wins, else directional open, else unchanged.
+        dominantSIG: SIDEWAYS > CLOSE > directional open > NOSIG.
+
+        Sticky state: in MQ4 the HSIG object lives for the EA's lifetime and
+        baseInit() only runs in its constructor, so when no branch matches the
+        previous composite / open / close values persist. Kept per symbol here.
+
+        Executor maps the result like imaSt3 + OnEntryExit_3: CLOSE or a signal
+        opposite the position closes; directional while flat opens.
+
+        Intentional deviations: evaluated once per closed bar (MQ4: every tick);
+        avg PnL is the multi-asset label average (TASK 7) rather than MQ4's
+        per-symbol sum / OrdersTotal(); single position, no pyramid (TASK 2).
+        """
+        st = self._hsig_state.setdefault(int(symbol_id), _HSigState())
+        base = t_sig.base_slope_sig
+
+        # HSIG::initSIG — baseSlopeSIG Strategy (composite)
+        if base != SIG.CLOSE and t_sig.fast_sig == SIG.HOLD:
+            st.composite_open, st.composite_close = SIG.NOSIG, SIG.CLOSE
+        elif base == SIG.CLOSE and total_trade_profits >= self.mq4_profit_close_threshold:
+            st.composite_open, st.composite_close = SIG.NOSIG, SIG.CLOSE
+        elif base in (SIG.BUY, SIG.SELL):
+            st.composite_open, st.composite_close = base, SIG.NOSIG
+
+        # HSIG::setSIGForStrategy_v3
+        if st.composite_close == SIG.CLOSE:
+            st.open_sig, st.close_sig = SIG.NOSIG, SIG.CLOSE
+        elif st.composite_open in (SIG.BUY, SIG.SELL):
+            st.open_sig, st.close_sig = st.composite_open, SIG.NOSIG
+
+        # SanStrategies::dominantSIG
+        if st.open_sig == SIG.SIDEWAYS:
+            return SIG.SIDEWAYS
+        if st.close_sig == SIG.CLOSE:
+            return SIG.CLOSE
+        if st.open_sig in (SIG.BUY, SIG.SELL):
+            return st.open_sig
+        return SIG.NOSIG
+
+    Strategy_6 = strategy_6
+
+    def reset_state(self, symbol_id: Optional[int] = None) -> None:
+        """Clear Strategy_6 sticky state (one symbol, or all) — MQ4 baseInit()."""
+        if symbol_id is None:
+            self._hsig_state.clear()
+        else:
+            self._hsig_state.pop(int(symbol_id), None)
+
+
+@dataclass
+class _HSigState:
+    """Per-symbol mirror of the HSIG members Strategy_6 reads/writes."""
+
+    composite_open: SIG = SIG.NOSIG   # compositeSIG_1
+    composite_close: SIG = SIG.NOSIG  # composite_CloseSIG_1
+    open_sig: SIG = SIG.NOSIG         # HSIG.openSIG
+    close_sig: SIG = SIG.NOSIG        # HSIG.closeSIG
