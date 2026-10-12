@@ -1,0 +1,15 @@
+TASK 1:
+
+Read the mq4_code_base_v98.txt and cb_v1_v2.txt code base. mq4 is the original code base and c# code was in process of getting ported from mq4 to c#.
+Now the the objective is to use cTrader openapi to port all of the mq4 functionality to python code.
+
+open api lacks many of mq4 built in indicators. luckily it needs only a handful of indicator (simple, exponential, smoothening moving averages), standard deviation (cp, op) or just about any series of data. So on so forth. It also needs support for some datastructures such class CircularBuffer.
+
+the code in claudeApp_v1 folder is an attempt to create a layered approach towards mq4_code_base in function and not an exact replica. mq4 lacks built in support for advanced statistical calculations and various other ML libraries.
+
+Read both the code base files and evaluate the app in claudeApp_v1. This task is plan task mode for creation of memory for execution of future tasks.
+
+TASK 2: 
+
+Please keep claudeApp_v1/design_v1.txt updated as an app design blue print so that the entire app may brought back up online
+on the basis of claudeApp_v1/design_v1.

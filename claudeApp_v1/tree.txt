@@ -1,0 +1,36 @@
+.
+├── capp/                    # BUSINESS LAYER
+│   ├── __init__.py
+│   ├── ctraderapp.py
+│   ├── signals/             # (was csignals)
+│   │   ├── __init__.py
+│   │   ├── signals.py
+│   │   └── stats.py
+│   └── strategies/          # (was cstrategies)
+│       ├── __init__.py
+│       └── strategies.py
+├── csys/                    # SYSTEM LAYER
+│   ├── __init__.py
+│   ├── ctypes.py            # facade → csys.ctrader_api.ctypes (canonical types)
+│   ├── ctrader_api/
+│   │   ├── __init__.py
+│   │   ├── client.py
+│   │   ├── config.py
+│   │   ├── ctypes.py        # CANONICAL: SIG, DTYPE, T_SIG, IndData
+│   │   ├── cenums.py        # shim → ctypes.SIG
+│   │   └── execution.py
+│   └── cindicators/
+│       ├── __init__.py
+│       ├── _utils.py
+│       ├── adx.py
+│       ├── atr.py
+│       ├── ma.py
+│       ├── snapshot.py
+│       └── stddev.py
+├── code_references/
+├── design.txt
+├── main.py
+├── main_twisted.py
+├── main_fastapi.py
+├── basic.py
+└── requirements.txt
