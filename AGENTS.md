@@ -130,6 +130,7 @@ Legacy `design.txt` tasks:
 | V1-T24 | Done | `capp/physics` covariance-matrix determinant |
 | V1-T25 | Done | MQ4 parity: SMMA indicators (21), slopes 5/21, 2000-bar seed, Strategy_6, `--dry-run` |
 | V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (live default, intentional MQ4 deviation) |
+| V1-T27 | Done | v1 `mode="acc"` (ATR-normalized acceleration, entry margin) + real flat-regime hysteresis |
 
 ---
 
@@ -139,7 +140,7 @@ Legacy `design.txt` tasks:
 
 - `base_slope_data = slope_val(ima240, 5, 21, shift=1)`, `slope30_data = slope_val(ima30, 5, 21, shift=1)`
 - `base_slope_sig = kinetic_acceleration_sig(val1, val2, 0.015, -0.06)`; `slope30_sig = …(0.015, -0.2)`
-- `base_slope_sig_v1 = kinetic_acceleration_sig_v1(val1, val2, atr_pips, close_limit=-0.20)`; `slope30_sig_v1 = …(close_limit=-0.30)`: flat when `|slow|/atr_pips < 0.01` → SIDEWAYS, `< 0.02` → NOSIG band, `f/s ≥ 1` → BUY/SELL (convex only), ratio < close_limit → CLOSE (decel), else NOSIG
+- `base_slope_sig_v1` / `slope30_sig_v1` = `kinetic_acceleration_sig_v1(val1, val2, atr_pips, prev_flat=…)` via `SanSignals._kin_v1`. Flat regime with hysteresis (`|slow|/atr_pips` < 0.01 → flat, ≥ 0.02 → trending, between → previous regime, stored per symbol and series) → SIDEWAYS when flat. Trending, `kin_v1_mode="acc"` (default): `acc = sign(s)·(f-s)/atr_pips`; `f·s>0 and acc ≥ 0.002` → BUY/SELL, `f·s≤0 or acc < -0.010` (slope30 -0.015) → CLOSE, else NOSIG. `kin_v1_mode="ratio"` keeps the V1-T26 `f/s-1` gates (0 / -0.20 / -0.30) for comparison
 - `fsigN = fast_slow_sig(close[1], imaN[1])`; `fast_sig = fuse(fuse(fsig5, fsig14), fsig30)` (CLOSE if NOSIG)
 - `micro_wave_sig` is an interim proxy (true MQ4 `microWaveSIG` not ported)
 

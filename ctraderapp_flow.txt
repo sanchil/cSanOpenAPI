@@ -257,7 +257,7 @@ ASCII (startup):
        ├─ strategies.evaluate(data, total_trade_profits, strategy=active)
        │      ├─ signals.init_sig(data) → T_SIG
        │      │     slopes slope_val(ima240|ima30, 5, 21, shift=1)
-       │      │     base_slope_sig / slope30_sig (+ _v1, ATR-relative), fsig*, fast_sig, micro_wave proxy
+       │      │     base_slope_sig / slope30_sig (+ _v1: ATR-relative acc, flat-regime hysteresis per symbol), fsig*, fast_sig, micro_wave proxy
        │      └─ Strategy_N(t_sig[, pnl][, symbol_id]) → SIG
        │            Strategy_7 (live): base_slope_sig_v1, flat→CLOSE, decel CLOSE if pnl>=2
        │            Strategy_6: MQ4 baseSlope composite, sticky per-symbol state

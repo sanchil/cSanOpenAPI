@@ -3,7 +3,10 @@ SanSignals / HSIG core — design.txt execution path.
 
 Migrated from:
   SanSignals::kineticAccelerationSIG
-  (+ kinetic_acceleration_sig_v1 — intentional redesign, TASKS.txt TASK 3)
+  (+ kinetic_acceleration_sig_v1 — intentional redesign, TASKS.txt TASK 3/4)
+
+Deviation (V1-T26/T27): SanSignals keeps per-(symbol, series) flat-regime
+state for kinetic_acceleration_sig_v1 hysteresis; MQ4 SanSignals is stateless.
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -14,9 +17,9 @@ Call once per cycle after indicators are refreshed on IndData.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
-from csys.ctypes import IndData, SIG, T_SIG
+from csys.ctypes import DTYPE, IndData, SIG, T_SIG
 
 from .stats import mql_at, resolve_pip, slope_val
 
@@ -25,22 +28,44 @@ SLOPE_DENOM = 5
 SLOPE_DENOM_WIDE = 21
 
 # kinetic_acceleration_sig_v1 defaults (not MQ4; untuned starting points).
-# Flat band is |slowSlope| in ATR per bar: 0.015 pips/bar (MQ4 fixed cutoff)
-# is ~0.015 ATR/bar on an M1 major with ~1 pip ATR, so 0.01/0.02 brackets it.
-KIN_V1_FLAT_ENTER = 0.01   # |s|/ATR below this → flat (SIDEWAYS)
-KIN_V1_FLAT_EXIT = 0.02    # |s|/ATR at/above this → trending; between → NOSIG
-KIN_V1_OPEN_LIMIT = 0.0    # ratio >= 0 (f/s >= 1): convex only
+# All "trend" / "acc" values are ATR per bar (slopes in pips/bar ÷ ATR pips).
+# Flat band: 0.015 pips/bar (MQ4 fixed cutoff) is ~0.015 ATR/bar on an M1
+# major with ~1 pip ATR, so 0.01/0.02 brackets it.
+KIN_V1_FLAT_ENTER = 0.01   # trending → flat when |s|/ATR drops below this
+KIN_V1_FLAT_EXIT = 0.02    # flat → trending when |s|/ATR reaches this
+# mode="acc" (default, V1-T27): acc = sign(s)·(f - s)/ATR
+#   open +0.002 ≈ ratio +0.05..+0.10 at s = 0.02..0.04 ATR/bar
+#   close 0.010 / 0.015 ≈ ratio -0.20 / -0.30 at s = 0.05 ATR/bar
+KIN_V1_OPEN_ACC = 0.002
+KIN_V1_CLOSE_ACC_BASE = 0.010
+KIN_V1_CLOSE_ACC_SLOPE30 = 0.015
+# mode="ratio" (V1-T26 baseline, kept for walk-forward comparison): f/s - 1
+KIN_V1_OPEN_LIMIT = 0.0
 KIN_V1_CLOSE_LIMIT_BASE = -0.20
 KIN_V1_CLOSE_LIMIT_SLOPE30 = -0.30
-_KIN_V1_EPS = 1e-9         # float tolerance on the ratio gates
+KIN_V1_MODES = ("acc", "ratio")
+_KIN_V1_EPS = 1e-9         # float tolerance on the gates
 
 
 class SanSignals:
     """Signal generators operating on an IndData snapshot (once per cycle)."""
 
-    def __init__(self, default_shift: int = 1) -> None:
+    def __init__(self, default_shift: int = 1, *, kin_v1_mode: str = "acc") -> None:
         # MQL SHIFT for closed-bar analysis (1 = previous bar if [0] is forming)
         self.default_shift = int(default_shift)
+        if kin_v1_mode not in KIN_V1_MODES:
+            raise ValueError(f"kin_v1_mode must be one of {KIN_V1_MODES}")
+        self.kin_v1_mode = kin_v1_mode
+        # kinetic_acceleration_sig_v1 flat regime per (symbol_id, series label)
+        self._kin_v1_flat: Dict[Tuple[int, str], bool] = {}
+
+    def reset_state(self, symbol_id: Optional[int] = None) -> None:
+        """Forget v1 flat-regime state (one symbol, or all)."""
+        if symbol_id is None:
+            self._kin_v1_flat.clear()
+        else:
+            for key in [k for k in self._kin_v1_flat if k[0] == int(symbol_id)]:
+                del self._kin_v1_flat[key]
 
     # ------------------------------------------------------------------ primitives
     @staticmethod
@@ -123,52 +148,100 @@ class SanSignals:
     kineticAccelerationSIG = kinetic_acceleration_sig
 
     @staticmethod
+    def kin_v1_flat_regime(
+        slow_slope: float,
+        atr_pips: float,
+        prev_flat: Optional[bool] = None,
+        *,
+        flat_enter: float = KIN_V1_FLAT_ENTER,
+        flat_exit: float = KIN_V1_FLAT_EXIT,
+    ) -> Optional[bool]:
+        """
+        Flat-regime classifier for kinetic_acceleration_sig_v1.
+
+        trend = |s| / atr_pips (ATR per bar). Returns True (flat), False
+        (trending) or None (undecided: bad input, or inside the band with no
+        ``prev_flat``). With ``prev_flat`` this is real hysteresis: a flat
+        regime stays flat until trend >= flat_exit, a trending one stays
+        trending until trend < flat_enter.
+        """
+        # x != x is the NaN test (cheaper than math.isnan in tight loops)
+        if slow_slope != slow_slope or atr_pips != atr_pips or atr_pips <= 0.0:
+            return None
+        trend = abs(slow_slope) / atr_pips
+        if trend < flat_enter:
+            return True
+        if trend >= flat_exit:
+            return False
+        return prev_flat
+
+    @staticmethod
     def kinetic_acceleration_sig_v1(
         fast_slope: float,
         slow_slope: float,
         atr_pips: float,
         *,
+        prev_flat: Optional[bool] = None,
+        mode: str = "acc",
         flat_enter: float = KIN_V1_FLAT_ENTER,
         flat_exit: float = KIN_V1_FLAT_EXIT,
+        open_acc: float = KIN_V1_OPEN_ACC,
+        close_acc: float = KIN_V1_CLOSE_ACC_BASE,
         open_limit: float = KIN_V1_OPEN_LIMIT,
         close_limit: float = KIN_V1_CLOSE_LIMIT_BASE,
     ) -> SIG:
         """
         Kinetic acceleration v1 — intentional redesign of kineticAccelerationSIG
-        (TASKS.txt TASK 3; not MQ4 behavior, used by Strategy_7).
+        (TASKS.txt TASK 3/4; not MQ4 behavior, used by Strategy_7).
 
-        Slopes are pips/bar (slope_val), ``atr_pips`` is ATR in pips, so
-        ``trend = |s| / atr_pips`` is ATR per bar and means the same on every
-        symbol. ``ratio = f/s - 1`` as in v0.
+        Slopes are pips/bar (slope_val) and ``atr_pips`` is ATR in pips, so
+        every threshold is in ATR per bar and means the same on every symbol.
 
-        - NaN input / ATR <= 0           → NOSIG (no data, no action)
-        - trend <  flat_enter            → SIDEWAYS (flat-market close)
-        - trend <  flat_exit             → NOSIG (flat hysteresis band)
-        - ratio >= open_limit (0 = f>=s) → BUY/SELL by sign of s (convex only)
-        - ratio <  close_limit           → CLOSE (deceleration close)
-        - else                           → NOSIG (hold band)
+        Regime (kin_v1_flat_regime, hysteresis via ``prev_flat``):
+        - bad input / ATR <= 0     → NOSIG (no data, no action)
+        - flat                     → SIDEWAYS (flat-market close)
+        - undecided (band, no prev)→ NOSIG (dead band)
 
-        Differences from v0: flat is volatility-relative and returns SIDEWAYS
-        (not CLOSE) so strategies can tell flat from deceleration; entry needs
-        convexity (v0 opened at f/s >= 0.95); a wide hold band replaces v0's
-        1-point band (base -0.05/-0.06); ratio gates use a float tolerance; the
-        dead ``|s| < 1e-6`` guard is gone (covered by ATR normalization).
+        Trending, mode="acc" (default): d = sign(s),
+        acc = d·(f - s)/atr_pips (ATR/bar, + = accelerating with the trend)
+        - f·s > 0 and acc >= open_acc  → BUY/SELL by sign of s (convex entry)
+        - f·s <= 0 or acc < -close_acc → CLOSE (reversal / deceleration)
+        - else                         → NOSIG (hold band)
+
+        Trending, mode="ratio" (V1-T26 baseline): ratio = f/s - 1
+        - ratio >= open_limit → BUY/SELL; ratio < close_limit → CLOSE; else NOSIG
+
+        Why "acc": the ratio divides by s, so just above the flat gate a small
+        noise in f swings it by ±1; acc has no near-zero denominator and its
+        thresholds mean the same at every slope magnitude. open_acc > 0 is an
+        entry margin so a steady trend (f ≈ s) doesn't flicker BUY/NOSIG.
+        Inputs are SMMA slopes over 5/21 bars, so signals carry MA lag.
         """
-        if any(math.isnan(x) for x in (fast_slope, slow_slope, atr_pips)):
+        if fast_slope != fast_slope:
             return SIG.NOSIG
-        if atr_pips <= 0.0:
+        flat = SanSignals.kin_v1_flat_regime(
+            slow_slope, atr_pips, prev_flat, flat_enter=flat_enter, flat_exit=flat_exit
+        )
+        if flat is None:
             return SIG.NOSIG
-
-        trend = abs(slow_slope) / atr_pips
-        if trend < flat_enter:
+        if flat:
             return SIG.SIDEWAYS
-        if trend < flat_exit:
+
+        side = SIG.BUY if slow_slope > 0.0 else SIG.SELL
+        if mode == "ratio":
+            ratio = fast_slope / slow_slope - 1.0
+            if ratio >= open_limit - _KIN_V1_EPS:
+                return side
+            if ratio < close_limit - _KIN_V1_EPS:
+                return SIG.CLOSE
             return SIG.NOSIG
 
-        ratio = fast_slope / slow_slope - 1.0
-        if ratio >= open_limit - _KIN_V1_EPS:
-            return SIG.BUY if slow_slope > 0.0 else SIG.SELL
-        if ratio < close_limit - _KIN_V1_EPS:
+        d = 1.0 if slow_slope > 0.0 else -1.0
+        acc = d * (fast_slope - slow_slope) / atr_pips
+        same_sign = fast_slope * slow_slope > 0.0
+        if same_sign and acc >= open_acc - _KIN_V1_EPS:
+            return side
+        if not same_sign or acc < -close_acc - _KIN_V1_EPS:
             return SIG.CLOSE
         return SIG.NOSIG
 
@@ -255,13 +328,14 @@ class SanSignals:
             atr_pips = mql_at(ind.atr, sh) / resolve_pip(pip, point)
         except (IndexError, TypeError, ValueError):
             atr_pips = float("nan")
-        t.base_slope_sig_v1 = self.kinetic_acceleration_sig_v1(
-            t.base_slope_data.val1, t.base_slope_data.val2, atr_pips,
-            close_limit=KIN_V1_CLOSE_LIMIT_BASE,
+        sid = int(getattr(ind, "symbol_id", 0) or 0)
+        t.base_slope_sig_v1 = self._kin_v1(
+            sid, "base", t.base_slope_data, atr_pips,
+            close_acc=KIN_V1_CLOSE_ACC_BASE, close_limit=KIN_V1_CLOSE_LIMIT_BASE,
         )
-        t.slope30_sig_v1 = self.kinetic_acceleration_sig_v1(
-            t.slope30_data.val1, t.slope30_data.val2, atr_pips,
-            close_limit=KIN_V1_CLOSE_LIMIT_SLOPE30,
+        t.slope30_sig_v1 = self._kin_v1(
+            sid, "slope30", t.slope30_data, atr_pips,
+            close_acc=KIN_V1_CLOSE_ACC_SLOPE30, close_limit=KIN_V1_CLOSE_LIMIT_SLOPE30,
         )
 
         # --- price vs MA fast/slow ---
@@ -290,6 +364,25 @@ class SanSignals:
 
     # Alias matching HSIG::initSIG naming
     initSIG = init_sig
+
+    def _kin_v1(
+        self,
+        symbol_id: int,
+        label: str,
+        data: DTYPE,
+        atr_pips: float,
+        **limits: float,
+    ) -> SIG:
+        """kinetic_acceleration_sig_v1 with this symbol's flat regime carried bar to bar."""
+        key = (symbol_id, label)
+        prev = self._kin_v1_flat.get(key)
+        sig = self.kinetic_acceleration_sig_v1(
+            data.val1, data.val2, atr_pips, prev_flat=prev, mode=self.kin_v1_mode, **limits
+        )
+        flat = self.kin_v1_flat_regime(data.val2, atr_pips, prev)
+        if flat is not None:
+            self._kin_v1_flat[key] = flat
+        return sig
 
     @staticmethod
     def _micro_wave_proxy(t: T_SIG) -> SIG:

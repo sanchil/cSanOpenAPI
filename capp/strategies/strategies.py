@@ -282,11 +282,13 @@ class CStrategies:
     Strategy_7 = strategy_7
 
     def reset_state(self, symbol_id: Optional[int] = None) -> None:
-        """Clear Strategy_6 sticky state (one symbol, or all) — MQ4 baseInit()."""
+        """Clear Strategy_6 sticky state and the v1 flat regime (Strategy_7)
+        for one symbol, or all — MQ4 baseInit()."""
         if symbol_id is None:
             self._hsig_state.clear()
         else:
             self._hsig_state.pop(int(symbol_id), None)
+        self.signals.reset_state(symbol_id)
 
 
 @dataclass

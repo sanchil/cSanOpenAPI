@@ -322,14 +322,19 @@ Out of scope (unless a task explicitly reopens them):
         |slow|<=zone → CLOSE; ratio=(fast-slow)/slow;
         ratio >= -0.05 → BUY/SELL by sign(fast); ratio < close_limit → CLOSE;
         else NOSIG; NaN → NOSIG
-    base_slope_sig_v1 = kinetic_acceleration_sig_v1(val1, val2, atr_pips,
-                                                    close_limit=-0.20)
-    slope30_sig_v1    = kinetic_acceleration_sig_v1(…, close_limit=-0.30)
-        (V1-T26; not MQ4) atr_pips = ATR[s]/pip; trend=|slow|/atr_pips;
-        NaN or atr<=0 → NOSIG; trend<0.01 → SIDEWAYS (flat);
-        trend<0.02 → NOSIG (flat hysteresis); ratio=f/s-1 >= 0 → BUY/SELL
-        by sign(slow) (convex only); ratio < close_limit → CLOSE (decel);
-        else NOSIG (hold band). Ratio gates use 1e-9 float tolerance.
+    base_slope_sig_v1 = _kin_v1(sid,"base",   …, close_acc=0.010 | close_limit=-0.20)
+    slope30_sig_v1    = _kin_v1(sid,"slope30",…, close_acc=0.015 | close_limit=-0.30)
+        (V1-T26/T27; not MQ4) atr_pips = ATR[s]/pip; trend=|slow|/atr_pips.
+        Flat regime (kin_v1_flat_regime, real hysteresis): trend<0.01 → flat,
+        trend>=0.02 → trending, between → previous regime, kept per
+        (symbol_id, series) in SanSignals._kin_v1_flat (None → NOSIG band).
+        NaN or atr<=0 → NOSIG; flat → SIDEWAYS.
+        Trending, kin_v1_mode="acc" (default): acc = sign(s)·(f-s)/atr_pips;
+          f·s>0 & acc >= +0.002 → BUY/SELL by sign(slow) (convex + margin);
+          f·s<=0 or acc < -close_acc → CLOSE (reversal/decel); else NOSIG.
+        kin_v1_mode="ratio" (V1-T26 baseline): ratio=f/s-1 >= 0 → BUY/SELL;
+          < close_limit → CLOSE; else NOSIG.  Gates use 1e-9 tolerance.
+        SanSignals(kin_v1_mode=…); CStrategies.reset_state also clears regime.
     fsig{5,14,30,60,120,240,500} = fast_slow_sig(close[1], ima*[1])
         sign of PPO only (threshold_pct kept for API parity, unused)
     fast_sig = fuse(fuse(fsig5, fsig14), fsig30), or CLOSE if NOSIG
@@ -377,7 +382,8 @@ Out of scope (unless a task explicitly reopens them):
               bar (MQ4 per tick); pnl = multi-asset label average (TASK 7);
               single position, no pyramid (TASK 2).
   Strategy_7  **LIVE DEFAULT** (V1-T26, intentional MQ4 deviation) — clean
-              baseSlope on base_slope_sig_v1, stateless:
+              baseSlope on base_slope_sig_v1, stateless (the flat
+              regime state lives in SanSignals, V1-T27):
                 v1 SIDEWAYS (flat)               → CLOSE (always)
                 v1 CLOSE (decel) & pnl >= 2.0    → CLOSE
                 v1 CLOSE (decel) & pnl <  2.0    → NOSIG (hold)
@@ -506,6 +512,7 @@ Out of scope (unless a task explicitly reopens them):
   V1-T24 DONE        capp/physics covariance-matrix determinant
   V1-T25 DONE        MQ4 live-path parity pass (2026-10-12) — see section 9
   V1-T26 DONE        kinetic_acceleration_sig_v1 + Strategy_7 (2026-10-13)
+  V1-T27 DONE        v1 ATR-normalized acceleration + regime hysteresis (2026-10-14)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1224,6 +1231,29 @@ convex up/down, linear, flat-chop and decelerating series.
 Known trade-offs: a losing trade in a decelerating (not flat) market is
 held until flat or opposite v1; thresholds need backtesting (V1-T17).
 
+TASK V1-T27:  [DONE 2026-10-14]  kinetic_acceleration_sig_v1 hardening
+
+Goal: address the TASKS.txt TASK 4 review of v1 while keeping its structure
+(ATR flat band, separate SIDEWAYS, convex entry, wide hold band).
+
+Delivered:
+  - mode="acc" (default): acc = sign(s)·(f - s)/ATR pips. No near-zero
+    denominator, so thresholds mean the same at every slope magnitude.
+    Entry needs f·s > 0 and acc >= KIN_V1_OPEN_ACC (0.002, an entry margin so
+    f≈s doesn't flicker); CLOSE on f·s <= 0 or acc < -KIN_V1_CLOSE_ACC_*
+    (0.010 base / 0.015 slope30, ≈ ratio -0.20/-0.30 at s = 0.05 ATR/bar).
+  - mode="ratio" reproduces V1-T26 exactly, for walk-forward comparison.
+  - Real flat hysteresis: SanSignals.kin_v1_flat_regime + prev_flat; regime
+    stored per (symbol_id, series), cleared by reset_state. Seed cycle
+    advances it (like Strategy_6's sticky state).
+  - NaN tests use x != x (no per-call generator).
+Not addressed: SMMA 5/21 lag (structural; documented in the docstring).
+The walk-forward comparison (signals/1000 bars, whipsaw rate, expectancy)
+needs real bars and V1-T17. Synthetic-only check (2000 M1 bars, Strategy_7,
+noisy walk switching up/chop/down/chop every 500 bars; NOT evidence for
+real data): directional runs per 1000 bars ratio 25.0 → acc 21.5; output
+changes per 1000 bars 51.5 → 44.5; BUY→CLOSE within 10 bars 0 in both.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1256,6 +1286,7 @@ held until flat or opposite v1; thresholds need backtesting (V1-T17).
   V1-T24   B       DONE        capp/physics cov-matrix determinant (NumPy)
   V1-T25   B       DONE        MQ4 live-path parity (SMMA, 5/21, Strategy_6)
   V1-T26   B       DONE        kinetic_acceleration_sig_v1 + Strategy_7 (live)
+  V1-T27   B       DONE        v1 acc mode (ATR units) + flat-regime hysteresis
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
