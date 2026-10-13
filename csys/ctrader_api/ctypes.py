@@ -262,6 +262,10 @@ class T_SIG:
     fsig240: SIG = SIG.NOSIG
     fsig500: SIG = SIG.NOSIG
 
+    # kinetic_acceleration_sig_v1 (Strategy_7): SIDEWAYS = flat, CLOSE = decel
+    base_slope_sig_v1: SIG = SIG.NOSIG
+    slope30_sig_v1: SIG = SIG.NOSIG
+
     # Extended slots used by strategies / future ports
     micro_wave_sig: SIG = SIG.NOSIG
     macro_wave_sig: SIG = SIG.NOSIG

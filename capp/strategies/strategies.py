@@ -5,6 +5,10 @@ Each strategy consumes a once-per-cycle T_SIG snapshot from capp.signals and
 returns a single SIG (BUY / SELL / HOLD / CLOSE / NOSIG).
 
 CTraderApp calls ``evaluate(ind)`` once per bar after indicators + init_sig.
+
+Strategy_7 is an intentional deviation from MQ4 (TASKS.txt TASK 3): it reads
+kinetic_acceleration_sig_v1 and splits CLOSE into flat vs. deceleration.
+Strategy_6 remains the MQ4-parity baseline.
 """
 
 from __future__ import annotations
@@ -26,12 +30,15 @@ class CStrategies:
         active: int = 1,
         profit_close_threshold: float = 4.0,
         mq4_profit_close_threshold: float = 2.0,
+        decel_profit_close_threshold: float = 2.0,
     ) -> None:
         self.signals = signals or SanSignals()
-        self.active = int(active)  # Strategy_1 .. Strategy_6
+        self.active = int(active)  # Strategy_1 .. Strategy_7
         self.profit_close_threshold = float(profit_close_threshold)
         # Strategy_6: HSIG::initSIG uses getTotalTradeProfits(1002) >= 2.0
         self.mq4_profit_close_threshold = float(mq4_profit_close_threshold)
+        # Strategy_7: deceleration CLOSE only when avg PnL >= this
+        self.decel_profit_close_threshold = float(decel_profit_close_threshold)
         self.last_t_sig: Optional[T_SIG] = None
         self.last_sig: SIG = SIG.NOSIG
         # Strategy_6 sticky HSIG state per symbol_id (see strategy_6)
@@ -78,6 +85,7 @@ class CStrategies:
             4: self.strategy_4,
             5: self.strategy_5,
             6: self.strategy_6,
+            7: self.strategy_7,
         }
         fn = dispatch.get(int(n), self.strategy_1)
         if n == 1:
@@ -244,6 +252,34 @@ class CStrategies:
         return SIG.NOSIG
 
     Strategy_6 = strategy_6
+
+    def strategy_7(self, t_sig: T_SIG, total_trade_profits: float = 0.0) -> SIG:
+        """
+        Clean baseSlope strategy on kinetic_acceleration_sig_v1 (TASK 3).
+
+          - base v1 SIDEWAYS (flat)                         → CLOSE, always
+          - base v1 CLOSE (deceleration), avg PnL >= thr    → CLOSE
+          - base v1 BUY/SELL (convex, trending)             → BUY/SELL
+          - otherwise                                       → NOSIG (hold)
+
+        Stateless: NOSIG already means "hold" in the executor, so no sticky
+        HSIG state is needed. Deliberately drops Strategy_6's
+        "fastSIG == HOLD → close" branch, which chattered on any fsig5/14/30
+        disagreement. A losing trade in a decelerating (not flat) market is
+        held until the market goes flat or base v1 turns opposite.
+        """
+        base = t_sig.base_slope_sig_v1
+        if base == SIG.SIDEWAYS:
+            return SIG.CLOSE
+        if base == SIG.CLOSE:
+            if total_trade_profits >= self.decel_profit_close_threshold:
+                return SIG.CLOSE
+            return SIG.NOSIG
+        if base in (SIG.BUY, SIG.SELL):
+            return base
+        return SIG.NOSIG
+
+    Strategy_7 = strategy_7
 
     def reset_state(self, symbol_id: Optional[int] = None) -> None:
         """Clear Strategy_6 sticky state (one symbol, or all) — MQ4 baseInit()."""

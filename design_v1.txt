@@ -97,9 +97,9 @@ Out of scope (unless a task explicitly reopens them):
   Step 4 — offline sanity (no network)
       python -c "import capp, csys; from csys.ctrader_api import CTraderConfig; \
         from capp import CTraderApp; \
-        a=CTraderApp(CTraderConfig('x','y','z',1),active_strategy=6,dry_run=True); \
+        a=CTraderApp(CTraderConfig('x','y','z',1),active_strategy=7,dry_run=True); \
         print(a.executor.label, a.bar_count, a.fxpair_arr, a.strategies.active)"
-    Expected: cSanOpenAPI 2000 [1, 4] 6
+    Expected: cSanOpenAPI 2000 [1, 4] 7
 
   Step 5 — first run in dry-run, then live
       python main.py --dry-run          # or CTRADER_DRY_RUN=1 (env or .env)
@@ -175,10 +175,10 @@ Out of scope (unless a task explicitly reopens them):
     ctraderapp.py         # CTraderApp lifecycle + run_signal_cycle (~830 lines)
     signals/signals.py    # SanSignals (init_sig, fast_slow_sig, kinetic…, fuse)
     signals/stats.py      # slope_val, compute_stencil_kinematics, mql_at/index
-    strategies/strategies.py  # CStrategies Strategy_1..6 + _HSigState
+    strategies/strategies.py  # CStrategies Strategy_1..7 + _HSigState
     utils.py              # SanUtils + PositionPnL (pure PnL averaging)
     physics/{math,metrics}.py # NumPy cov-matrix determinant (V1-T24)
-  main.py                 # PRIMARY entry: active_strategy=6, --dry-run flag
+  main.py                 # PRIMARY entry: active_strategy=7, --dry-run flag
   main_twisted.py         # optional OHLCV HTTP helper (port 8080)
   main_fastapi.py         # incomplete experiment — do not use
   basic.py                # raw SDK smoke sketch — do not use
@@ -256,7 +256,8 @@ Out of scope (unless a task explicitly reopens them):
 
   Gates:
     History seed:  execute=False  (indicators+signals only; no orders, no PnL)
-                   NOTE: Strategy_6 sticky state IS updated by the seed cycle.
+                   NOTE: Strategy_6 sticky state IS updated by the seed cycle
+                   (Strategy_7 is stateless).
     Live after _hist_ready: execute=True
     dry_run: PnL fetch returns [] (avg 0); executor simulates fills
     enabled=False on OrderExecutor: handle_signal → "skipped"
@@ -272,7 +273,7 @@ Out of scope (unless a task explicitly reopens them):
   main.py
     → argparse --dry-run ; load_config() (also loads .env into os.environ)
     → dry_run = --dry-run or CTRADER_DRY_RUN in {1,true,yes,on}
-    → CTraderApp(config, active_strategy=6, dry_run=dry_run).run()
+    → CTraderApp(config, active_strategy=7, dry_run=dry_run).run()
          (trade_volume=10000, trade_label="cSanOpenAPI", trading_enabled=True
           are CTraderApp defaults)
     → CTraderOpenAPI.run() → Client.startService → reactor.run()
@@ -321,6 +322,14 @@ Out of scope (unless a task explicitly reopens them):
         |slow|<=zone → CLOSE; ratio=(fast-slow)/slow;
         ratio >= -0.05 → BUY/SELL by sign(fast); ratio < close_limit → CLOSE;
         else NOSIG; NaN → NOSIG
+    base_slope_sig_v1 = kinetic_acceleration_sig_v1(val1, val2, atr_pips,
+                                                    close_limit=-0.20)
+    slope30_sig_v1    = kinetic_acceleration_sig_v1(…, close_limit=-0.30)
+        (V1-T26; not MQ4) atr_pips = ATR[s]/pip; trend=|slow|/atr_pips;
+        NaN or atr<=0 → NOSIG; trend<0.01 → SIDEWAYS (flat);
+        trend<0.02 → NOSIG (flat hysteresis); ratio=f/s-1 >= 0 → BUY/SELL
+        by sign(slow) (convex only); ratio < close_limit → CLOSE (decel);
+        else NOSIG (hold band). Ratio gates use 1e-9 float tolerance.
     fsig{5,14,30,60,120,240,500} = fast_slow_sig(close[1], ima*[1])
         sign of PPO only (threshold_pct kept for API parity, unused)
     fast_sig = fuse(fuse(fsig5, fsig14), fsig30), or CLOSE if NOSIG
@@ -351,7 +360,7 @@ Out of scope (unless a task explicitly reopens them):
               directional slope30 → that side
   Strategy_5  slope30 CLOSE → CLOSE; pnl>=4.0 → CLOSE; directional slope30
               → that side; else NOSIG  (Python-only; no MQ4/cBot origin)
-  Strategy_6  **LIVE DEFAULT** — MQ4 HSIG::initSIG "baseSlopeSIG Strategy"
+  Strategy_6  MQ4-parity baseline (live default until V1-T26) — MQ4 HSIG::initSIG "baseSlopeSIG Strategy"
               → setSIGForStrategy_v3 → SanStrategies::dominantSIG:
                 base!=CLOSE & fast==HOLD        → composite close
                 base==CLOSE & pnl >= 2.0        → composite close
@@ -367,6 +376,15 @@ Out of scope (unless a task explicitly reopens them):
               Deviations (documented in docstring): evaluated once per closed
               bar (MQ4 per tick); pnl = multi-asset label average (TASK 7);
               single position, no pyramid (TASK 2).
+  Strategy_7  **LIVE DEFAULT** (V1-T26, intentional MQ4 deviation) — clean
+              baseSlope on base_slope_sig_v1, stateless:
+                v1 SIDEWAYS (flat)               → CLOSE (always)
+                v1 CLOSE (decel) & pnl >= 2.0    → CLOSE
+                v1 CLOSE (decel) & pnl <  2.0    → NOSIG (hold)
+                v1 BUY/SELL                      → that side
+                otherwise                        → NOSIG
+              Drops Strategy_6's fast==HOLD close branch. Threshold:
+              CStrategies(decel_profit_close_threshold=2.0).
 
 1.9 Execution policy (OrderExecutor, TASK 2)
 --------------------------------------------
@@ -391,7 +409,7 @@ Out of scope (unless a task explicitly reopens them):
   Execution events update the book (filled/partial → open, CLOSED → remove).
 
   Defaults (code): fxpair_arr=[1,4] (broker-dependent IDs), period M1,
-  capacity/history 2000 bars, volume 10000 units, strategy 6.
+  capacity/history 2000 bars, volume 10000 units, strategy 7.
 
 1.10 Account PnL path (TASK 7–11)
 ---------------------------------
@@ -487,6 +505,7 @@ Out of scope (unless a task explicitly reopens them):
                      degrade on failure
   V1-T24 DONE        capp/physics covariance-matrix determinant
   V1-T25 DONE        MQ4 live-path parity pass (2026-10-12) — see section 9
+  V1-T26 DONE        kinetic_acceleration_sig_v1 + Strategy_7 (2026-10-13)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1096,7 +1115,7 @@ Critical path for safe extension of strategies:
   Concern                 Path
   ----------------------  -------------------------------------------------
   Bring-up runbook        design_v1.txt §1.0
-  Start trading           main.py [--dry-run] → capp.CTraderApp(strategy 6)
+  Start trading           main.py [--dry-run] → capp.CTraderApp(strategy 7)
   Connect / protos        csys.ctrader_api.client.CTraderOpenAPI
   Inbound message gate    csys.ctrader_api.client.is_spot_event (on_tick)
   Config                  csys.ctrader_api.config.load_config
@@ -1183,6 +1202,28 @@ Verified offline (no network) with a hand-fed protobuf harness: 0 replay
 cycles, no crash, one cycle per live minute roll, bid/ask fallback intact.
 Open follow-ups: G1 (microWave), G4 (RSI/MFI/OBV), G16, G20.
 
+TASK V1-T26:  [DONE 2026-10-13]  kinetic_acceleration_sig_v1 + Strategy_7
+
+Goal: fix the design issues found in the TASKS.txt TASK 3 review of
+kineticAccelerationSIG / Strategy_6. Intentional deviation from MQ4;
+Strategy_6 and kinetic_acceleration_sig stay unchanged as the parity baseline.
+
+Delivered:
+  - SanSignals.kinetic_acceleration_sig_v1 (+ module function, camelCase
+    alias): ATR-relative flat check with its own hysteresis band; SIDEWAYS
+    for flat vs. CLOSE for deceleration; convex-only entry (open_limit 0);
+    wide hold band (close -0.20 base / -0.30 slope30); float tolerance.
+    Constants KIN_V1_* in signals.py (untuned starting points).
+  - T_SIG.base_slope_sig_v1 / slope30_sig_v1, filled by init_sig.
+  - CStrategies.strategy_7 (stateless): flat → CLOSE always; decel CLOSE
+    gated by avg PnL >= decel_profit_close_threshold (2.0); directional
+    v1 → open; else NOSIG. main.py active_strategy=7.
+Verified offline: v1 truth table (incl. TASK 3 probes f=0.187/s=0.20 →
+NOSIG, flat with f=0.30 → SIDEWAYS) and init_sig end-to-end on synthetic
+convex up/down, linear, flat-chop and decelerating series.
+Known trade-offs: a losing trade in a decelerating (not flat) market is
+held until flat or opposite v1; thresholds need backtesting (V1-T17).
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1214,6 +1255,7 @@ Open follow-ups: G1 (microWave), G4 (RSI/MFI/OBV), G16, G20.
   V1-T23   E       PENDING     Health endpoint
   V1-T24   B       DONE        capp/physics cov-matrix determinant (NumPy)
   V1-T25   B       DONE        MQ4 live-path parity (SMMA, 5/21, Strategy_6)
+  V1-T26   B       DONE        kinetic_acceleration_sig_v1 + Strategy_7 (live)
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 

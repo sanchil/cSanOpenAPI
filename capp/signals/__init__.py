@@ -12,6 +12,7 @@ from .signals import (
     fast_slow_sig,
     fuse_sig,
     kinetic_acceleration_sig,
+    kinetic_acceleration_sig_v1,
 )
 from .stats import (
     compute_stencil_kinematics,
@@ -28,6 +29,7 @@ __all__ = [
     "SIG",
     "fast_slow_sig",
     "kinetic_acceleration_sig",
+    "kinetic_acceleration_sig_v1",
     "fuse_sig",
     "slope_val",
     "slopeVal",

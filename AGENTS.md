@@ -1,4 +1,4 @@
-# cSanOpenApi — Project Instructions
+# grokApp_v6 — Project Instructions
 
 Python trading app that ports an MQ4 / cBot strategy stack onto the **cTrader Open API** (`ctrader-open-api` + Twisted). Migrate only the **current live execution path** (MQ4 `HSIG::initSIG`), not full MQ4 bloat.
 
@@ -42,7 +42,7 @@ capp/
   strategies/          # CStrategies Strategy_1..6 (6 = MQ4 live composite)
   utils.py             # SanUtils + PositionPnL (pure PnL average)
   physics/             # NumPy math + series metrics (V1-T24)
-main.py                # primary entry (active_strategy=6, --dry-run)
+main.py                # primary entry (active_strategy=7, --dry-run)
 main_twisted.py        # optional OHLCV HTTP (Twisted)
 main_fastapi.py        # incomplete experiment — do not use
 basic.py               # raw SDK sketch — do not use
@@ -77,7 +77,7 @@ IndData (OHLCV, oldest→newest deques)
 
 Implemented in `capp.ctraderapp.CTraderApp.run_signal_cycle()`.
 
-- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated)
+- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated; Strategy_7 is stateless)
 - Live bars after `_hist_ready`: `execute=True`
 - `dry_run`: PnL fetch returns `[]` (avg 0), orders simulated, startup reconcile skipped
 - **Rule:** indicators + signals once per bar; rest of cycle only reads `IndData` / `T_SIG` / `last_trade_sig` / `last_total_trade_profits`
@@ -129,6 +129,7 @@ Legacy `design.txt` tasks:
 | V1-T03 | Partial | Spot-event gate + int `symbolId` done; coerce helper pending |
 | V1-T24 | Done | `capp/physics` covariance-matrix determinant |
 | V1-T25 | Done | MQ4 parity: SMMA indicators (21), slopes 5/21, 2000-bar seed, Strategy_6, `--dry-run` |
+| V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (live default, intentional MQ4 deviation) |
 
 ---
 
@@ -138,12 +139,14 @@ Legacy `design.txt` tasks:
 
 - `base_slope_data = slope_val(ima240, 5, 21, shift=1)`, `slope30_data = slope_val(ima30, 5, 21, shift=1)`
 - `base_slope_sig = kinetic_acceleration_sig(val1, val2, 0.015, -0.06)`; `slope30_sig = …(0.015, -0.2)`
+- `base_slope_sig_v1 = kinetic_acceleration_sig_v1(val1, val2, atr_pips, close_limit=-0.20)`; `slope30_sig_v1 = …(close_limit=-0.30)`: flat when `|slow|/atr_pips < 0.01` → SIDEWAYS, `< 0.02` → NOSIG band, `f/s ≥ 1` → BUY/SELL (convex only), ratio < close_limit → CLOSE (decel), else NOSIG
 - `fsigN = fast_slow_sig(close[1], imaN[1])`; `fast_sig = fuse(fuse(fsig5, fsig14), fsig30)` (CLOSE if NOSIG)
 - `micro_wave_sig` is an interim proxy (true MQ4 `microWaveSIG` not ported)
 
-`CStrategies` (`profit_close_threshold=4.0`, `mq4_profit_close_threshold=2.0`):
+`CStrategies` (`profit_close_threshold=4.0`, `mq4_profit_close_threshold=2.0`, `decel_profit_close_threshold=2.0`):
 
-- **Strategy 6 (live default)**: MQ4 baseSlopeSIG composite → `setSIGForStrategy_v3` → `dominantSIG`, with sticky per-symbol state (`_HSigState`, `reset_state()`); profit close at avg PnL ≥ 2.0; entry on directional baseSlope with no fsig gate
+- **Strategy 7 (live default, V1-T26)**: stateless, on `base_slope_sig_v1`. SIDEWAYS (flat) → CLOSE always; CLOSE (decel) → CLOSE only if avg PnL ≥ 2.0, else NOSIG; BUY/SELL → that side; else NOSIG
+- Strategy 6 (MQ4-parity baseline): MQ4 baseSlopeSIG composite → `setSIGForStrategy_v3` → `dominantSIG`, with sticky per-symbol state (`_HSigState`, `reset_state()`); profit close at avg PnL ≥ 2.0; entry on directional baseSlope with no fsig gate
 - Strategy 1: micWave alignment → BUY/SELL else CLOSE
 - Strategies 2–3: cBot baseSlope variants (fsig alignment gate, profit close 4.0)
 - Strategies 4–5: slope30 variants (5 is Python-only, no MQ4/cBot origin)

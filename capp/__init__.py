@@ -5,7 +5,7 @@ Holds strategies, signals, and the trading app loop. Depends on :mod:`csys`
 for connectivity, types, market data, and indicators.
 
   capp.signals      — SanSignals builders (types from csys.ctypes)
-  capp.strategies   — Strategy_1..4
+  capp.strategies   — Strategy_1..6 (6 = MQ4 live composite, default)
   capp.ctraderapp    — CTraderApp orchestration
 """
 

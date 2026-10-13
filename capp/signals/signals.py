@@ -3,6 +3,7 @@ SanSignals / HSIG core — design.txt execution path.
 
 Migrated from:
   SanSignals::kineticAccelerationSIG
+  (+ kinetic_acceleration_sig_v1 — intentional redesign, TASKS.txt TASK 3)
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -17,11 +18,21 @@ from typing import Optional
 
 from csys.ctypes import IndData, SIG, T_SIG
 
-from .stats import mql_at, slope_val
+from .stats import mql_at, resolve_pip, slope_val
 
 # MQ4 SS::update slope windows (fast, wide) for baseSlope / slope30
 SLOPE_DENOM = 5
 SLOPE_DENOM_WIDE = 21
+
+# kinetic_acceleration_sig_v1 defaults (not MQ4; untuned starting points).
+# Flat band is |slowSlope| in ATR per bar: 0.015 pips/bar (MQ4 fixed cutoff)
+# is ~0.015 ATR/bar on an M1 major with ~1 pip ATR, so 0.01/0.02 brackets it.
+KIN_V1_FLAT_ENTER = 0.01   # |s|/ATR below this → flat (SIDEWAYS)
+KIN_V1_FLAT_EXIT = 0.02    # |s|/ATR at/above this → trending; between → NOSIG
+KIN_V1_OPEN_LIMIT = 0.0    # ratio >= 0 (f/s >= 1): convex only
+KIN_V1_CLOSE_LIMIT_BASE = -0.20
+KIN_V1_CLOSE_LIMIT_SLOPE30 = -0.30
+_KIN_V1_EPS = 1e-9         # float tolerance on the ratio gates
 
 
 class SanSignals:
@@ -112,6 +123,58 @@ class SanSignals:
     kineticAccelerationSIG = kinetic_acceleration_sig
 
     @staticmethod
+    def kinetic_acceleration_sig_v1(
+        fast_slope: float,
+        slow_slope: float,
+        atr_pips: float,
+        *,
+        flat_enter: float = KIN_V1_FLAT_ENTER,
+        flat_exit: float = KIN_V1_FLAT_EXIT,
+        open_limit: float = KIN_V1_OPEN_LIMIT,
+        close_limit: float = KIN_V1_CLOSE_LIMIT_BASE,
+    ) -> SIG:
+        """
+        Kinetic acceleration v1 — intentional redesign of kineticAccelerationSIG
+        (TASKS.txt TASK 3; not MQ4 behavior, used by Strategy_7).
+
+        Slopes are pips/bar (slope_val), ``atr_pips`` is ATR in pips, so
+        ``trend = |s| / atr_pips`` is ATR per bar and means the same on every
+        symbol. ``ratio = f/s - 1`` as in v0.
+
+        - NaN input / ATR <= 0           → NOSIG (no data, no action)
+        - trend <  flat_enter            → SIDEWAYS (flat-market close)
+        - trend <  flat_exit             → NOSIG (flat hysteresis band)
+        - ratio >= open_limit (0 = f>=s) → BUY/SELL by sign of s (convex only)
+        - ratio <  close_limit           → CLOSE (deceleration close)
+        - else                           → NOSIG (hold band)
+
+        Differences from v0: flat is volatility-relative and returns SIDEWAYS
+        (not CLOSE) so strategies can tell flat from deceleration; entry needs
+        convexity (v0 opened at f/s >= 0.95); a wide hold band replaces v0's
+        1-point band (base -0.05/-0.06); ratio gates use a float tolerance; the
+        dead ``|s| < 1e-6`` guard is gone (covered by ATR normalization).
+        """
+        if any(math.isnan(x) for x in (fast_slope, slow_slope, atr_pips)):
+            return SIG.NOSIG
+        if atr_pips <= 0.0:
+            return SIG.NOSIG
+
+        trend = abs(slow_slope) / atr_pips
+        if trend < flat_enter:
+            return SIG.SIDEWAYS
+        if trend < flat_exit:
+            return SIG.NOSIG
+
+        ratio = fast_slope / slow_slope - 1.0
+        if ratio >= open_limit - _KIN_V1_EPS:
+            return SIG.BUY if slow_slope > 0.0 else SIG.SELL
+        if ratio < close_limit - _KIN_V1_EPS:
+            return SIG.CLOSE
+        return SIG.NOSIG
+
+    kineticAccelerationSIG_v1 = kinetic_acceleration_sig_v1
+
+    @staticmethod
     def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:
         """
         Weighted fusion — HSIG::fuseSIG.
@@ -187,6 +250,20 @@ class SanSignals:
             " Slope30",
         )
 
+        # --- v1 kinetic (Strategy_7): flat band in ATR units ---
+        try:
+            atr_pips = mql_at(ind.atr, sh) / resolve_pip(pip, point)
+        except (IndexError, TypeError, ValueError):
+            atr_pips = float("nan")
+        t.base_slope_sig_v1 = self.kinetic_acceleration_sig_v1(
+            t.base_slope_data.val1, t.base_slope_data.val2, atr_pips,
+            close_limit=KIN_V1_CLOSE_LIMIT_BASE,
+        )
+        t.slope30_sig_v1 = self.kinetic_acceleration_sig_v1(
+            t.slope30_data.val1, t.slope30_data.val2, atr_pips,
+            close_limit=KIN_V1_CLOSE_LIMIT_SLOPE30,
+        )
+
         # --- price vs MA fast/slow ---
         try:
             close = mql_at(ind.close, sh)
@@ -243,6 +320,15 @@ def kinetic_acceleration_sig(
     return SanSignals.kinetic_acceleration_sig(
         fast_slope, slow_slope, trade_zone_check, trade_close_limit, func_label
     )
+
+
+def kinetic_acceleration_sig_v1(
+    fast_slope: float,
+    slow_slope: float,
+    atr_pips: float,
+    **kwargs: float,
+) -> SIG:
+    return SanSignals.kinetic_acceleration_sig_v1(fast_slope, slow_slope, atr_pips, **kwargs)
 
 
 def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:
