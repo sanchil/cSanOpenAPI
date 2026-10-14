@@ -304,7 +304,11 @@ class CStrategies:
         is unused (no PnL gate) and kept for the shared dispatch signature.
         """
         _ = total_trade_profits
+        s7 = self.strategy_7(t_sig, total_trade_profits)  # warm Strategy_7 for logging
         pt = t_sig.peak_trough_sig
+        
+        print(f" Strategy_7: {s7} Peak/Trough: {pt} ")
+
         if pt == SIG.SIDEWAYS:
             return SIG.CLOSE
         if pt in (SIG.BUY, SIG.SELL):
