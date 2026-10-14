@@ -31,5 +31,5 @@ if __name__ == "__main__":
     dry_run = args.dry_run or _env_flag("CTRADER_DRY_RUN")
     print("⚠️  DRY RUN — no orders will be sent" if dry_run else "✅ LIVE — orders will be sent")
 
-    app = CTraderApp(config, active_strategy=7, dry_run=dry_run)  # baseSlope v1 (Strategy_6 = MQ4 parity)
+    app = CTraderApp(config, active_strategy=8, dry_run=dry_run)  # peak/trough structure (7 = baseSlope v1, 6 = MQ4 parity)
     app.run()

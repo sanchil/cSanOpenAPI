@@ -9,6 +9,9 @@ CTraderApp calls ``evaluate(ind)`` once per bar after indicators + init_sig.
 Strategy_7 is an intentional deviation from MQ4 (TASKS.txt TASK 3): it reads
 kinetic_acceleration_sig_v1 and splits CLOSE into flat vs. deceleration.
 Strategy_6 remains the MQ4-parity baseline.
+
+Strategy_8 (V1-T30, not MQ4) trades market structure from peak_trough_sig:
+higher peaks → BUY, lower peaks → SELL, equal peak zone → CLOSE.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ class CStrategies:
         decel_profit_close_threshold: float = 2.0,
     ) -> None:
         self.signals = signals or SanSignals()
-        self.active = int(active)  # Strategy_1 .. Strategy_7
+        self.active = int(active)  # Strategy_1 .. Strategy_8
         self.profit_close_threshold = float(profit_close_threshold)
         # Strategy_6: HSIG::initSIG uses getTotalTradeProfits(1002) >= 2.0
         self.mq4_profit_close_threshold = float(mq4_profit_close_threshold)
@@ -86,6 +89,7 @@ class CStrategies:
             5: self.strategy_5,
             6: self.strategy_6,
             7: self.strategy_7,
+            8: self.strategy_8,
         }
         fn = dispatch.get(int(n), self.strategy_1)
         if n == 1:
@@ -280,6 +284,30 @@ class CStrategies:
         return SIG.NOSIG
 
     Strategy_7 = strategy_7
+
+    def strategy_8(self, t_sig: T_SIG, total_trade_profits: float = 0.0) -> SIG:
+        """
+        Peak/trough structure strategy on peak_trough_sig (V1-T29/T30).
+
+          - SIDEWAYS (latest peak in the previous peak's zone) → CLOSE, always
+          - BUY / SELL (higher / lower peaks)                  → BUY / SELL
+          - otherwise (fewer than two peaks, NOSIG)            → NOSIG (hold)
+
+        Stateless. peak_trough_sig only changes when a new peak is confirmed,
+        so the output is naturally persistent between peaks. An opposite
+        signal closes via the executor policy (no reversal in the same
+        cycle); the next bar re-opens on the new side. ``total_trade_profits``
+        is unused (no PnL gate) and kept for the shared dispatch signature.
+        """
+        _ = total_trade_profits
+        pt = t_sig.peak_trough_sig
+        if pt == SIG.SIDEWAYS:
+            return SIG.CLOSE
+        if pt in (SIG.BUY, SIG.SELL):
+            return pt
+        return SIG.NOSIG
+
+    Strategy_8 = strategy_8
 
     def reset_state(self, symbol_id: Optional[int] = None) -> None:
         """Clear Strategy_6 sticky state and the v1 flat regime (Strategy_7)

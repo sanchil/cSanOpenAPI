@@ -2,7 +2,7 @@ CTraderApp lifecycle flowchart
 ==============================
 Source: capp/ctraderapp.py  (+ CTraderOpenAPI in csys/ctrader_api/client.py,
         OrderExecutor in csys/ctrader_api/execution.py)
-Entry:  main.py [--dry-run] → CTraderApp(config, active_strategy=7, dry_run=…).run()
+Entry:  main.py [--dry-run] → CTraderApp(config, active_strategy=8, dry_run=…).run()
 Synced with code: 2026-10-12 (V1-T02). Blueprint: design_v1.txt §1.5–1.6.
 
 
@@ -13,7 +13,7 @@ Synced with code: 2026-10-12 (V1-T02). Blueprint: design_v1.txt §1.5–1.6.
     ├─ argparse --dry-run
     ├─ load_config()                         [csys]  (also loads .env into env)
     ├─ dry_run = --dry-run or CTRADER_DRY_RUN in {1,true,yes,on}
-    └─ CTraderApp(config, active_strategy=7, dry_run=dry_run)
+    └─ CTraderApp(config, active_strategy=8, dry_run=dry_run)
          │   defaults: trade_volume=10000, trade_label="cSanOpenAPI",
          │             trading_enabled=True
          │
@@ -102,7 +102,7 @@ Synced with code: 2026-10-12 (V1-T02). Blueprint: design_v1.txt §1.5–1.6.
        ├─ decode_trendbar(bar, digits) each bar, sort by utc_minutes
        ├─ load_bars() into IndData; remember last utc_minutes
        ├─ run_signal_cycle(data, id, execute=False)   # seed only: NO PnL, NO orders
-       │     (see §5; Strategy_6 sticky state IS advanced; Strategy_7 stateless)
+       │     (see §5; Strategy_6 sticky state IS advanced; Strategy_7 / Strategy_8 stateless)
        ├─ _hist_pending -= 1
        └─ when _hist_pending == 0 → _on_all_historical_loaded()
               │
@@ -259,7 +259,8 @@ ASCII (startup):
        │      │     slopes slope_val(ima240|ima30, 5, 21, shift=1)
        │      │     base_slope_sig / slope30_sig (+ _v1: ATR-relative acc, flat-regime hysteresis per symbol), fsig*, fast_sig, micro_wave proxy
        │      └─ Strategy_N(t_sig[, pnl][, symbol_id]) → SIG
-       │            Strategy_7 (live): base_slope_sig_v1, flat→CLOSE, decel CLOSE if pnl>=2
+       │            Strategy_8 (live): peak_trough_sig, equal-zone peaks→CLOSE, higher/lower→BUY/SELL
+       │            Strategy_7: base_slope_sig_v1, flat→CLOSE, decel CLOSE if pnl>=2
        │            Strategy_6: MQ4 baseSlope composite, sticky per-symbol state
        │
        ├─ store last_t_sig[sid], last_trade_sig[sid], last_total_trade_profits
@@ -425,7 +426,7 @@ flowchart TD
   V -->|new minute| W[run_signal_cycle execute=True]
   W --> X[refresh_indicators]
   X --> PN[fetch_position_pnls single-flight]
-  PN --> Y[strategies.evaluate - Strategy_7]
+  PN --> Y[strategies.evaluate - Strategy_8]
   Y --> Z[executor.handle_signal]
   U -->|bid/ask only| AA[update_current_bar / check_for_new_bar]
   AA -->|interval roll| AB[on_bar → run_signal_cycle]

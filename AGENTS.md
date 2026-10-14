@@ -39,10 +39,10 @@ csys/
 capp/
   ctraderapp.py        # CTraderApp (lifecycle + run_signal_cycle + PnL fetch)
   signals/             # SanSignals, stats (slope_val / stencil / mql_at)
-  strategies/          # CStrategies Strategy_1..6 (6 = MQ4 live composite)
+  strategies/          # CStrategies Strategy_1..8 (6 = MQ4 parity, 8 = live)
   utils.py             # SanUtils + PositionPnL (pure PnL average)
-  physics/             # NumPy math + series metrics (V1-T24)
-main.py                # primary entry (active_strategy=7, --dry-run)
+  physics/             # NumPy math + series metrics (V1-T24, extrema V1-T28)
+main.py                # primary entry (active_strategy=8, --dry-run)
 main_twisted.py        # optional OHLCV HTTP (Twisted)
 main_fastapi.py        # incomplete experiment — do not use
 basic.py               # raw SDK sketch — do not use
@@ -77,7 +77,7 @@ IndData (OHLCV, oldest→newest deques)
 
 Implemented in `capp.ctraderapp.CTraderApp.run_signal_cycle()`.
 
-- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated; Strategy_7 is stateless)
+- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated; Strategy_7 / Strategy_8 are stateless)
 - Live bars after `_hist_ready`: `execute=True`
 - `dry_run`: PnL fetch returns `[]` (avg 0), orders simulated, startup reconcile skipped
 - **Rule:** indicators + signals once per bar; rest of cycle only reads `IndData` / `T_SIG` / `last_trade_sig` / `last_total_trade_profits`
@@ -98,7 +98,7 @@ from csys.cindicators import compute_indicators
 from capp.signals import SanSignals
 from capp.strategies import CStrategies
 from capp.utils import SanUtils, PositionPnL
-from capp.physics import covariance_matrix_determinant
+from capp.physics import covariance_matrix_determinant, find_extrema, find_extrema_scipy
 from capp import CTraderApp
 ```
 
@@ -129,7 +129,10 @@ Legacy `design.txt` tasks:
 | V1-T03 | Partial | Spot-event gate + int `symbolId` done; coerce helper pending |
 | V1-T24 | Done | `capp/physics` covariance-matrix determinant |
 | V1-T25 | Done | MQ4 parity: SMMA indicators (21), slopes 5/21, 2000-bar seed, Strategy_6, `--dry-run` |
-| V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (live default, intentional MQ4 deviation) |
+| V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (intentional MQ4 deviation; live default until V1-T30) |
+| V1-T28 | Done | `capp/physics` local extrema: `find_extrema` (NumPy) / `find_extrema_scipy` (find_peaks) |
+| V1-T29 | Done | `peak_trough_sig` → `T_SIG.peak_trough_sig` (higher/equal-zone/lower peaks); used by Strategy_8 |
+| V1-T30 | Done | Strategy_8 on `peak_trough_sig` (SIDEWAYS → CLOSE, BUY/SELL → side, else hold) — **live default** |
 | V1-T27 | Done | v1 `mode="acc"` (ATR-normalized acceleration, entry margin) + real flat-regime hysteresis |
 
 ---
@@ -141,6 +144,7 @@ Legacy `design.txt` tasks:
 - `base_slope_data = slope_val(ima240, 5, 21, shift=1)`, `slope30_data = slope_val(ima30, 5, 21, shift=1)`
 - `base_slope_sig = kinetic_acceleration_sig(val1, val2, 0.015, -0.06)`; `slope30_sig = …(0.015, -0.2)`
 - `base_slope_sig_v1` / `slope30_sig_v1` = `kinetic_acceleration_sig_v1(val1, val2, atr_pips, prev_flat=…)` via `SanSignals._kin_v1`. Flat regime with hysteresis (`|slow|/atr_pips` < 0.01 → flat, ≥ 0.02 → trending, between → previous regime, stored per symbol and series) → SIDEWAYS when flat. Trending, `kin_v1_mode="acc"` (default): `acc = sign(s)·(f-s)/atr_pips`; `f·s>0 and acc ≥ 0.002` → BUY/SELL, `f·s≤0 or acc < -0.010` (slope30 -0.015) → CLOSE, else NOSIG. `kin_v1_mode="ratio"` keeps the V1-T26 `f/s-1` gates (0 / -0.20 / -0.30) for comparison
+- `peak_trough_sig` = `SanSignals.peak_trough_sig(high, low, zone=0.5·atr_pips)` on the last 240 closed bars, `find_extrema(order=5)`. `pt_mode="peaks"` (default): last two peaks higher → BUY, lower → SELL, same zone → SIDEWAYS, fewer than 2 → NOSIG. `pt_mode="structure"`: HH+HL → BUY, LH+LL → SELL, both in zone or highs/lows disagree → SIDEWAYS, otherwise NOSIG. Stateless; not MQ4; read by Strategy_8 (V1-T29/T30)
 - `fsigN = fast_slow_sig(close[1], imaN[1])`; `fast_sig = fuse(fuse(fsig5, fsig14), fsig30)` (CLOSE if NOSIG)
 - `micro_wave_sig` is an interim proxy (true MQ4 `microWaveSIG` not ported)
 
@@ -225,7 +229,7 @@ Loaded by `csys.ctrader_api.config.load_config()`. Full bring-up and troubleshoo
 
 **`capp.strategies`**
 
-- `CStrategies.evaluate(ind, total_trade_profits=…)` → `SIG`; Strategy_1..6 (see above)
+- `CStrategies.evaluate(ind, total_trade_profits=…)` → `SIG`; Strategy_1..8 (see above)
 
 **`capp.utils`**
 
@@ -235,6 +239,7 @@ Loaded by `csys.ctrader_api.config.load_config()`. Full bring-up and troubleshoo
 
 - `math`: `covariance_matrix_2x2`, `matrix_determinant`
 - `metrics`: `covariance_matrix_determinant(A, B, n)` — det of 2×2 sample cov over last `n` bars (not wired into the bar cycle)
+- `metrics`: `find_extrema(series, order, pip_size)` / `find_extrema_scipy(series, prominence=, distance=, width=, pip_size=)` → `(maxima, minima)` lists of `(index, value)`; plateaus at leftmost bar; used by `SanSignals.peak_trough_sig` (V1-T29)
 - Series: **oldest → newest**; no Open API / Twisted imports
 
 **`capp.ctraderapp`**
@@ -282,7 +287,7 @@ Loaded by `csys.ctrader_api.config.load_config()`. Full bring-up and troubleshoo
 | Indicators | `csys.cindicators.snapshot.compute_indicators` |
 | Signals | `capp.signals.signals.SanSignals.init_sig` |
 | Strategies | `capp.strategies.strategies.CStrategies.evaluate` |
-| Physics metrics | `capp.physics.metrics.covariance_matrix_determinant` |
+| Physics metrics | `capp.physics.metrics.covariance_matrix_determinant`, `find_extrema`, `find_extrema_scipy` |
 
 ## Dependencies (`_requirements.txt`)
 
@@ -293,6 +298,7 @@ python-dotenv==1.2.3
 numpy==2.5.2
 fastapi==0.141.1      # main_fastapi.py experiment only
 uvicorn==0.52.4       # main_fastapi.py experiment only
+scipy==1.17.1         # capp.physics.find_extrema_scipy only (lazy import)
 ```
 
-`scipy` is reserved for future `capp.physics` ports and is not imported on the live path.
+`scipy` is used only by `capp.physics.find_extrema_scipy` (imported lazily); nothing on the live path imports it.

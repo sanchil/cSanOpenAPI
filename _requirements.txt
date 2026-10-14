@@ -4,3 +4,4 @@ numpy==2.5.2
 python-dotenv==1.2.3
 Twisted==26.4.0
 uvicorn==0.52.4
+scipy==1.17.1

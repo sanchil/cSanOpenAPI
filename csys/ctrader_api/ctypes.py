@@ -266,6 +266,9 @@ class T_SIG:
     base_slope_sig_v1: SIG = SIG.NOSIG
     slope30_sig_v1: SIG = SIG.NOSIG
 
+    # peak_trough_sig (V1-T29): higher/lower/equal-zone peaks; not yet used
+    peak_trough_sig: SIG = SIG.NOSIG
+
     # Extended slots used by strategies / future ports
     micro_wave_sig: SIG = SIG.NOSIG
     macro_wave_sig: SIG = SIG.NOSIG

@@ -7,6 +7,9 @@ Migrated from:
 
 Deviation (V1-T26/T27): SanSignals keeps per-(symbol, series) flat-regime
 state for kinetic_acceleration_sig_v1 hysteresis; MQ4 SanSignals is stateless.
+Not MQ4 (V1-T29): peak_trough_sig — market structure from find_extrema peaks
+(higher / equal-zone / lower peaks); computed in init_sig, not yet consumed by
+any strategy.
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -17,9 +20,12 @@ Call once per cycle after indicators are refreshed on IndData.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from itertools import islice
+from typing import Dict, Optional, Sequence, Tuple
 
 from csys.ctypes import DTYPE, IndData, SIG, T_SIG
+
+from capp.physics import find_extrema
 
 from .stats import mql_at, resolve_pip, slope_val
 
@@ -46,16 +52,31 @@ KIN_V1_CLOSE_LIMIT_SLOPE30 = -0.30
 KIN_V1_MODES = ("acc", "ratio")
 _KIN_V1_EPS = 1e-9         # float tolerance on the gates
 
+# peak_trough_sig defaults (not MQ4; untuned starting points, V1-T29).
+PT_ORDER = 5               # find_extrema order (distinct values each side)
+PT_LOOKBACK = 240          # closed bars scanned for extrema
+PT_ZONE_ATR = 0.5          # peaks within this many ATRs are the same zone
+PT_MODES = ("peaks", "structure")
+
 
 class SanSignals:
     """Signal generators operating on an IndData snapshot (once per cycle)."""
 
-    def __init__(self, default_shift: int = 1, *, kin_v1_mode: str = "acc") -> None:
+    def __init__(
+        self,
+        default_shift: int = 1,
+        *,
+        kin_v1_mode: str = "acc",
+        pt_mode: str = "peaks",
+    ) -> None:
         # MQL SHIFT for closed-bar analysis (1 = previous bar if [0] is forming)
         self.default_shift = int(default_shift)
         if kin_v1_mode not in KIN_V1_MODES:
             raise ValueError(f"kin_v1_mode must be one of {KIN_V1_MODES}")
         self.kin_v1_mode = kin_v1_mode
+        if pt_mode not in PT_MODES:
+            raise ValueError(f"pt_mode must be one of {PT_MODES}")
+        self.pt_mode = pt_mode
         # kinetic_acceleration_sig_v1 flat regime per (symbol_id, series label)
         self._kin_v1_flat: Dict[Tuple[int, str], bool] = {}
 
@@ -248,6 +269,74 @@ class SanSignals:
     kineticAccelerationSIG_v1 = kinetic_acceleration_sig_v1
 
     @staticmethod
+    def extrema_trend(points: Sequence[Tuple[int, float]], zone: float) -> Optional[int]:
+        """Compare the last two extrema: +1 higher, -1 lower, 0 same zone
+        (|diff| <= zone), None if fewer than two."""
+        if len(points) < 2:
+            return None
+        diff = points[-1][1] - points[-2][1]
+        if abs(diff) <= zone:
+            return 0
+        return 1 if diff > 0.0 else -1
+
+    @staticmethod
+    def peak_trough_sig(
+        highs: Sequence[float],
+        lows: Optional[Sequence[float]] = None,
+        *,
+        zone: float,
+        order: int = PT_ORDER,
+        pip_size: Optional[float] = None,
+        mode: str = "peaks",
+    ) -> SIG:
+        """
+        Peak/trough market-structure signal (not MQ4; V1-T29).
+
+        Extrema come from capp.physics.find_extrema: maxima on ``highs``,
+        minima on ``lows``. A peak is a zone, not a point: the latest two
+        peaks are "equal" when within ``zone`` (pips if ``pip_size`` is given,
+        else price units). Series are oldest → newest and should hold closed
+        bars only.
+
+        mode="peaks" (default, TASKS.txt TASK 5 wording), last two maxima:
+        - higher → BUY, lower → SELL, same zone → SIDEWAYS
+        - fewer than two peaks → NOSIG
+        mode="structure" also needs ``lows``, last two maxima and minima:
+        - higher highs + higher lows → BUY; lower highs + lower lows → SELL
+        - both in zone, or highs/lows disagree (expanding / contracting
+          range) → SIDEWAYS
+        - one side in zone and the other directional, or too few extrema
+          → NOSIG (structure still forming)
+
+        Lag: an extremum is confirmed only after ``order`` distinct values on
+        its right, so the signal changes only when a new peak (trough) is
+        confirmed; a breakout through the last peak zone is not seen until
+        the next peak forms.
+        """
+        if mode not in PT_MODES:
+            raise ValueError(f"mode must be one of {PT_MODES}")
+        maxima, _ = find_extrema(highs, order, pip_size)
+        p = SanSignals.extrema_trend(maxima, zone)
+        if mode == "peaks":
+            if p is None:
+                return SIG.NOSIG
+            return SIG.BUY if p > 0 else (SIG.SELL if p < 0 else SIG.SIDEWAYS)
+
+        if lows is None:
+            raise ValueError('mode="structure" needs lows')
+        _, minima = find_extrema(lows, order, pip_size)
+        t = SanSignals.extrema_trend(minima, zone)
+        if p is None or t is None:
+            return SIG.NOSIG
+        if p == t:
+            return SIG.BUY if p > 0 else (SIG.SELL if p < 0 else SIG.SIDEWAYS)
+        if p * t < 0:
+            return SIG.SIDEWAYS
+        return SIG.NOSIG
+
+    peakTroughSIG = peak_trough_sig
+
+    @staticmethod
     def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:
         """
         Weighted fusion — HSIG::fuseSIG.
@@ -338,6 +427,9 @@ class SanSignals:
             close_acc=KIN_V1_CLOSE_ACC_SLOPE30, close_limit=KIN_V1_CLOSE_LIMIT_SLOPE30,
         )
 
+        # --- peak/trough structure (V1-T29): closed bars, ATR-sized zone ---
+        t.peak_trough_sig = self._peak_trough(ind, sh, atr_pips, resolve_pip(pip, point))
+
         # --- price vs MA fast/slow ---
         try:
             close = mql_at(ind.close, sh)
@@ -384,6 +476,21 @@ class SanSignals:
             self._kin_v1_flat[key] = flat
         return sig
 
+    def _peak_trough(self, ind: IndData, shift: int, atr_pips: float, pip: float) -> SIG:
+        """peak_trough_sig on the last PT_LOOKBACK closed bars of high/low."""
+        if atr_pips != atr_pips or atr_pips <= 0.0:
+            return SIG.NOSIG
+        n = len(ind.high)
+        end = n - max(shift, 0)
+        start = max(end - PT_LOOKBACK, 0)
+        if end <= start or len(ind.low) != n:
+            return SIG.NOSIG
+        highs = list(islice(ind.high, start, end))
+        lows = list(islice(ind.low, start, end)) if self.pt_mode == "structure" else None
+        return self.peak_trough_sig(
+            highs, lows, zone=PT_ZONE_ATR * atr_pips, pip_size=pip, mode=self.pt_mode,
+        )
+
     @staticmethod
     def _micro_wave_proxy(t: T_SIG) -> SIG:
         """
@@ -426,3 +533,11 @@ def kinetic_acceleration_sig_v1(
 
 def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:
     return SanSignals.fuse_sig(a, b, weight_a, weight_b)
+
+
+def peak_trough_sig(
+    highs: Sequence[float],
+    lows: Optional[Sequence[float]] = None,
+    **kwargs,
+) -> SIG:
+    return SanSignals.peak_trough_sig(highs, lows, **kwargs)

@@ -69,8 +69,8 @@ Out of scope (unless a task explicitly reopens them):
       python-dotenv==1.2.3
       numpy==2.5.2              # capp.physics
       fastapi==0.141.1, uvicorn==0.52.4   # only for main_fastapi.py experiment
-    Not in _requirements.txt but imported/declared by capp.physics docstring:
-      scipy>=1.11 (reserved; nothing on the live path imports it today).
+      scipy==1.17.1             # capp.physics.find_extrema_scipy only (lazy
+                                # import; nothing on the live path needs it)
     requirements.txt / environment.yaml are full freezes of a large ML env
     (torch etc.) — use only to clone the whole conda env, not for the app.
 
@@ -97,9 +97,9 @@ Out of scope (unless a task explicitly reopens them):
   Step 4 — offline sanity (no network)
       python -c "import capp, csys; from csys.ctrader_api import CTraderConfig; \
         from capp import CTraderApp; \
-        a=CTraderApp(CTraderConfig('x','y','z',1),active_strategy=7,dry_run=True); \
+        a=CTraderApp(CTraderConfig('x','y','z',1),active_strategy=8,dry_run=True); \
         print(a.executor.label, a.bar_count, a.fxpair_arr, a.strategies.active)"
-    Expected: cSanOpenAPI 2000 [1, 4] 7
+    Expected: cSanOpenAPI 2000 [1, 4] 8
 
   Step 5 — first run in dry-run, then live
       python main.py --dry-run          # or CTRADER_DRY_RUN=1 (env or .env)
@@ -175,10 +175,11 @@ Out of scope (unless a task explicitly reopens them):
     ctraderapp.py         # CTraderApp lifecycle + run_signal_cycle (~830 lines)
     signals/signals.py    # SanSignals (init_sig, fast_slow_sig, kinetic…, fuse)
     signals/stats.py      # slope_val, compute_stencil_kinematics, mql_at/index
-    strategies/strategies.py  # CStrategies Strategy_1..7 + _HSigState
+    strategies/strategies.py  # CStrategies Strategy_1..8 + _HSigState
     utils.py              # SanUtils + PositionPnL (pure PnL averaging)
-    physics/{math,metrics}.py # NumPy cov-matrix determinant (V1-T24)
-  main.py                 # PRIMARY entry: active_strategy=7, --dry-run flag
+    physics/{math,metrics}.py # NumPy cov-matrix determinant (V1-T24);
+                              # find_extrema / find_extrema_scipy (V1-T28)
+  main.py                 # PRIMARY entry: active_strategy=8, --dry-run flag
   main_twisted.py         # optional OHLCV HTTP helper (port 8080)
   main_fastapi.py         # incomplete experiment — do not use
   basic.py                # raw SDK smoke sketch — do not use
@@ -257,7 +258,7 @@ Out of scope (unless a task explicitly reopens them):
   Gates:
     History seed:  execute=False  (indicators+signals only; no orders, no PnL)
                    NOTE: Strategy_6 sticky state IS updated by the seed cycle
-                   (Strategy_7 is stateless).
+                   (Strategy_7 / Strategy_8 are stateless).
     Live after _hist_ready: execute=True
     dry_run: PnL fetch returns [] (avg 0); executor simulates fills
     enabled=False on OrderExecutor: handle_signal → "skipped"
@@ -273,7 +274,7 @@ Out of scope (unless a task explicitly reopens them):
   main.py
     → argparse --dry-run ; load_config() (also loads .env into os.environ)
     → dry_run = --dry-run or CTRADER_DRY_RUN in {1,true,yes,on}
-    → CTraderApp(config, active_strategy=7, dry_run=dry_run).run()
+    → CTraderApp(config, active_strategy=8, dry_run=dry_run).run()
          (trade_volume=10000, trade_label="cSanOpenAPI", trading_enabled=True
           are CTraderApp defaults)
     → CTraderOpenAPI.run() → Client.startService → reactor.run()
@@ -335,6 +336,16 @@ Out of scope (unless a task explicitly reopens them):
         kin_v1_mode="ratio" (V1-T26 baseline): ratio=f/s-1 >= 0 → BUY/SELL;
           < close_limit → CLOSE; else NOSIG.  Gates use 1e-9 tolerance.
         SanSignals(kin_v1_mode=…); CStrategies.reset_state also clears regime.
+    peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips)  (V1-T29;
+        not MQ4; stateless; computed but no strategy reads it yet)
+        find_extrema(order=5, pip_size) on the last 240 closed bars
+        (shift excludes the forming bar); maxima on high, minima on low.
+        Last two extrema: |diff| <= zone → same zone (0), else ±1.
+        pt_mode="peaks" (default): peaks +1 → BUY, -1 → SELL, 0 → SIDEWAYS,
+          < 2 peaks → NOSIG.
+        pt_mode="structure": HH+HL → BUY, LH+LL → SELL, both zone → SIDEWAYS,
+          opposite (expanding/contracting) → SIDEWAYS, one zone + one
+          directional or < 2 extrema → NOSIG. ATR NaN/<=0 → NOSIG.
     fsig{5,14,30,60,120,240,500} = fast_slow_sig(close[1], ima*[1])
         sign of PPO only (threshold_pct kept for API parity, unused)
     fast_sig = fuse(fuse(fsig5, fsig14), fsig30), or CLOSE if NOSIG
@@ -381,7 +392,7 @@ Out of scope (unless a task explicitly reopens them):
               Deviations (documented in docstring): evaluated once per closed
               bar (MQ4 per tick); pnl = multi-asset label average (TASK 7);
               single position, no pyramid (TASK 2).
-  Strategy_7  **LIVE DEFAULT** (V1-T26, intentional MQ4 deviation) — clean
+  Strategy_7  (V1-T26, intentional MQ4 deviation; live default until V1-T30) — clean
               baseSlope on base_slope_sig_v1, stateless (the flat
               regime state lives in SanSignals, V1-T27):
                 v1 SIDEWAYS (flat)               → CLOSE (always)
@@ -391,6 +402,12 @@ Out of scope (unless a task explicitly reopens them):
                 otherwise                        → NOSIG
               Drops Strategy_6's fast==HOLD close branch. Threshold:
               CStrategies(decel_profit_close_threshold=2.0).
+  Strategy_8  **LIVE DEFAULT** (V1-T30, not MQ4) — market structure on
+              peak_trough_sig (pt_mode="peaks"), stateless, no PnL gate:
+                pt SIDEWAYS (peak in previous peak's zone) → CLOSE (always)
+                pt BUY / SELL (higher / lower peaks)       → that side
+                otherwise                                  → NOSIG (hold)
+              Opposite side closes via the executor; re-entry next bar.
 
 1.9 Execution policy (OrderExecutor, TASK 2)
 --------------------------------------------
@@ -415,7 +432,7 @@ Out of scope (unless a task explicitly reopens them):
   Execution events update the book (filled/partial → open, CLOSED → remove).
 
   Defaults (code): fxpair_arr=[1,4] (broker-dependent IDs), period M1,
-  capacity/history 2000 bars, volume 10000 units, strategy 7.
+  capacity/history 2000 bars, volume 10000 units, strategy 8.
 
 1.10 Account PnL path (TASK 7–11)
 ---------------------------------
@@ -513,6 +530,9 @@ Out of scope (unless a task explicitly reopens them):
   V1-T25 DONE        MQ4 live-path parity pass (2026-10-12) — see section 9
   V1-T26 DONE        kinetic_acceleration_sig_v1 + Strategy_7 (2026-10-13)
   V1-T27 DONE        v1 ATR-normalized acceleration + regime hysteresis (2026-10-14)
+  V1-T28 DONE        capp/physics local extrema helpers (2026-10-15)
+  V1-T29 DONE        peak_trough_sig on find_extrema (2026-10-15)
+  V1-T30 DONE        Strategy_8 on peak_trough_sig, live default (2026-10-15)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1122,7 +1142,7 @@ Critical path for safe extension of strategies:
   Concern                 Path
   ----------------------  -------------------------------------------------
   Bring-up runbook        design_v1.txt §1.0
-  Start trading           main.py [--dry-run] → capp.CTraderApp(strategy 7)
+  Start trading           main.py [--dry-run] → capp.CTraderApp(strategy 8)
   Connect / protos        csys.ctrader_api.client.CTraderOpenAPI
   Inbound message gate    csys.ctrader_api.client.is_spot_event (on_tick)
   Config                  csys.ctrader_api.config.load_config
@@ -1137,6 +1157,7 @@ Critical path for safe extension of strategies:
   Orders                  csys.ctrader_api.execution.OrderExecutor
   Bar → trade             capp.ctraderapp.CTraderApp.run_signal_cycle
   Physics / cov-det       capp.physics.metrics.covariance_matrix_determinant
+  Physics / extrema       capp.physics.metrics.find_extrema, find_extrema_scipy
   Lifecycle diagram       ctraderapp_flow.txt
   Historical design log   design.txt
   Forward blueprint       design_v1.txt  (this file)
@@ -1254,6 +1275,83 @@ noisy walk switching up/chop/down/chop every 500 bars; NOT evidence for
 real data): directional runs per 1000 bars ratio 25.0 → acc 21.5; output
 changes per 1000 bars 51.5 → 44.5; BUY→CLOSE within 10 bars 0 in both.
 
+TASK V1-T28:  [DONE 2026-10-15]  capp/physics local extrema (TASKS.txt TASK 5)
+
+Goal: a peak/trough helper for a later support/resistance signal (higher
+peaks → BUY, equal peaks (zone) → flat, lower peaks → SELL). Helper only;
+no signal or strategy uses it yet.
+
+Delivered (capp/physics/metrics.py, exported from capp.physics):
+  - find_extrema(series, order=1, pip_size=None): the TASK 5 function. Strict
+    dominance over `order` distinct-valued neighbours each side; plateaus
+    collapsed and reported at the leftmost bar. Fixed: empty series raised
+    IndexError; added pip_size > 0 check.
+  - find_extrema_scipy(series, prominence=, distance=, width=, pip_size=):
+    scipy.signal.find_peaks on x and -x, plateau_size=1 so plateaus also
+    report the leftmost bar. prominence is in pips when pip_size is given.
+    SciPy is imported lazily (scipy==1.17.1 added to _requirements.txt).
+  - Same return for both: (maxima, minima), lists of (index, value) sorted by
+    index. With pip_size, value = (price - series[0]) / pip_size, i.e. pips
+    relative to the window's first bar; only differences within one call are
+    meaningful (a rolling window shifts the base).
+Evaluation notes (for the signal task):
+  - Maxima = resistance, minima = support. Trend structure needs both:
+    higher highs + higher lows = up, lower highs + lower lows = down.
+  - `order` counts runs, not bars; NaN acts as a barrier.
+  - Confirmation lag: the newest `order` runs (find_extrema) / >= 1 bar
+    (find_peaks) can never be extrema. Confirmed extrema do not repaint on
+    append (checked on a 300-bar walk). Under a prominence filter a recent
+    peak can appear late but is never withdrawn.
+  - scipy.signal.argrelextrema is plateau-blind (misses flat tops), which
+    is why it is not used. find_peaks with no filters gives exactly the same
+    output as find_extrema(order=1) (2000-bar random walk).
+  - Peak "zones": use scipy.signal.peak_prominences / peak_widths on the
+    returned indices, or a pip tolerance when comparing peaks.
+
+TASK V1-T29:  [DONE 2026-10-15]  peak_trough_sig (find_extrema signal)
+
+Goal: the TASK 5 signal: BUY on higher peaks, flat when the latest peak is
+in the previous peak's zone, SELL on lower peaks. Not MQ4.
+
+Delivered:
+  - SanSignals.peak_trough_sig(highs, lows=None, *, zone, order=5,
+    pip_size=None, mode="peaks") (+ peakTroughSIG alias, module function,
+    exported from capp.signals) and SanSignals.extrema_trend helper.
+    Stateless and pure; series oldest → newest, closed bars only.
+  - Peaks are zones: two peaks are equal when within `zone`. init_sig uses
+    zone = PT_ZONE_ATR (0.5) × ATR pips, so it scales per symbol.
+  - mode="structure" (opt-in, SanSignals(pt_mode="structure")) also checks
+    troughs on lows; see section 6 init_sig notes for the truth table.
+  - T_SIG.peak_trough_sig (csys/ctrader_api/ctypes.py) filled once per bar by
+    init_sig on the last PT_LOOKBACK (240) closed bars.
+  - Consumed by Strategy_8 (V1-T30).
+Verified offline: sine-plus-trend highs/lows → BUY / SELL / SIDEWAYS (flat)
+in both modes; contracting range → SIDEWAYS (structure); < 2 peaks → NOSIG;
+bad mode → ValueError; init_sig end-to-end on 1500 synthetic bars → BUY on
+an uptrend, SELL on a downtrend in both modes.
+Known limits: the signal only updates when a new extremum is confirmed
+(order=5 runs of lag), so a breakout through the last peak zone is seen
+late; PT_ORDER / PT_LOOKBACK / PT_ZONE_ATR are untuned (needs V1-T17).
+
+TASK V1-T30:  [DONE 2026-10-15]  Strategy_8 on peak_trough_sig (live default)
+
+Delivered:
+  - CStrategies.strategy_8 (+ Strategy_8 alias, dispatch key 8):
+    peak_trough_sig SIDEWAYS → CLOSE; BUY/SELL → that side; else NOSIG.
+    Stateless; no PnL gate (total_trade_profits accepted, unused).
+  - main.py active_strategy=8 (Strategy_7 / Strategy_6 unchanged, selectable).
+Verified offline: truth table over every SIG; CTraderApp(active_strategy=8,
+dry_run=True) builds (pt_mode "peaks"); bar-by-bar evaluate on a synthetic
+2000-bar noisy walk (up/chop/down/chop × 500): BUY 487 / SELL 629 / CLOSE
+584 bars, 44 round trips under the executor policy, avg hold 19–34 bars.
+Synthetic only; NOT evidence of edge (net pips about -5 overall).
+Behavior notes:
+  - The signal is persistent between peaks, so on the first live bar after
+    the seed Strategy_8 opens a position if the last two peaks already
+    differ (no fresh-crossing requirement).
+  - Equal-zone peaks keep returning CLOSE, so no re-entry until a new peak
+    breaks the zone. Loss is unbounded until then (no SL; V1-T19).
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1287,6 +1385,9 @@ changes per 1000 bars 51.5 → 44.5; BUY→CLOSE within 10 bars 0 in both.
   V1-T25   B       DONE        MQ4 live-path parity (SMMA, 5/21, Strategy_6)
   V1-T26   B       DONE        kinetic_acceleration_sig_v1 + Strategy_7 (live)
   V1-T27   B       DONE        v1 acc mode (ATR units) + flat-regime hysteresis
+  V1-T28   B       DONE        capp/physics find_extrema (+ scipy find_peaks)
+  V1-T29   B       DONE        peak_trough_sig (higher/equal/lower peaks)
+  V1-T30   B       DONE        Strategy_8 (peak_trough_sig) — live default
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
