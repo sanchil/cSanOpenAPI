@@ -7,9 +7,9 @@ Migrated from:
 
 Deviation (V1-T26/T27): SanSignals keeps per-(symbol, series) flat-regime
 state for kinetic_acceleration_sig_v1 hysteresis; MQ4 SanSignals is stateless.
-Not MQ4 (V1-T29): peak_trough_sig — market structure from find_extrema peaks
-(higher / equal-zone / lower peaks); computed in init_sig, not yet consumed by
-any strategy.
+Not MQ4 (V1-T29/T31): peak_trough_sig — market structure from find_extrema
+peaks and troughs weighted equally (score = peak trend + trough trend), with
+a close-beyond-zone break override; computed in init_sig, read by Strategy_8.
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -67,7 +67,7 @@ class SanSignals:
         default_shift: int = 1,
         *,
         kin_v1_mode: str = "acc",
-        pt_mode: str = "peaks",
+        pt_mode: str = "structure",
     ) -> None:
         # MQL SHIFT for closed-bar analysis (1 = previous bar if [0] is forming)
         self.default_shift = int(default_shift)
@@ -287,36 +287,48 @@ class SanSignals:
         zone: float,
         order: int = PT_ORDER,
         pip_size: Optional[float] = None,
-        mode: str = "peaks",
+        mode: str = "structure",
+        close: Optional[float] = None,
     ) -> SIG:
         """
-        Peak/trough market-structure signal (not MQ4; V1-T29).
+        Peak/trough market-structure signal (not MQ4; V1-T29, reworked V1-T31).
 
-        Extrema come from capp.physics.find_extrema: maxima on ``highs``,
-        minima on ``lows``. A peak is a zone, not a point: the latest two
-        peaks are "equal" when within ``zone`` (pips if ``pip_size`` is given,
-        else price units). Series are oldest → newest and should hold closed
-        bars only.
+        Extrema come from capp.physics.find_extrema: peaks (maxima) on
+        ``highs``, troughs (minima) on ``lows``. A peak is a zone, not a
+        point: two extrema are "equal" when within ``zone`` (pips if
+        ``pip_size`` is given, else price units). Series are oldest → newest,
+        closed bars only.
 
-        mode="peaks" (default, TASKS.txt TASK 5 wording), last two maxima:
-        - higher → BUY, lower → SELL, same zone → SIDEWAYS
-        - fewer than two peaks → NOSIG
-        mode="structure" also needs ``lows``, last two maxima and minima:
-        - higher highs + higher lows → BUY; lower highs + lower lows → SELL
-        - both in zone, or highs/lows disagree (expanding / contracting
-          range) → SIDEWAYS
-        - one side in zone and the other directional, or too few extrema
-          → NOSIG (structure still forming)
+        Each side gets a trend from its last two extrema: +1 higher, -1
+        lower, 0 same zone. mode="structure" (default, TASKS.txt TASK 8)
+        weighs peaks and troughs equally, score = peaks + troughs:
+        - score > 0 → BUY:  HH+HL, flat peaks + HL (ascending triangle),
+                            HH + flat troughs
+        - score < 0 → SELL: LH+LL, LH + flat troughs (descending triangle),
+                            flat peaks + LL
+        - score = 0 → SIDEWAYS: both flat, or peaks and troughs opposite
+                      (expanding / contracting range)
+        - fewer than two peaks or two troughs → NOSIG
+        mode="peaks" (V1-T29 baseline): peaks only, +1 BUY / -1 SELL /
+        0 SIDEWAYS; ``lows`` not needed.
 
-        Lag: an extremum is confirmed only after ``order`` distinct values on
-        its right, so the signal changes only when a new peak (trough) is
-        confirmed; a breakout through the last peak zone is not seen until
-        the next peak forms.
+        Break override (``close`` = last closed price): a close beyond the
+        latest peak zone (> peak + zone) sets peaks to +1, a close beyond the
+        latest trough zone (< trough - zone) sets troughs to -1. A new higher
+        peak / lower trough is then already forming, so the structure reacts
+        without waiting ``order`` bars for it to confirm. Example: HH+HL then
+        a close under the last trough → score 0 → SIDEWAYS.
         """
         if mode not in PT_MODES:
             raise ValueError(f"mode must be one of {PT_MODES}")
-        maxima, _ = find_extrema(highs, order, pip_size)
-        p = SanSignals.extrema_trend(maxima, zone)
+        # Raw prices: find_extrema's pip output is relative to series[0],
+        # which differs between highs and lows; compare in price units.
+        z = zone * pip_size if pip_size else zone
+        brk = close is not None and close == close
+        maxima, _ = find_extrema(highs, order)
+        p = SanSignals.extrema_trend(maxima, z)
+        if p is not None and brk and close > maxima[-1][1] + z:
+            p = 1
         if mode == "peaks":
             if p is None:
                 return SIG.NOSIG
@@ -324,15 +336,18 @@ class SanSignals:
 
         if lows is None:
             raise ValueError('mode="structure" needs lows')
-        _, minima = find_extrema(lows, order, pip_size)
-        t = SanSignals.extrema_trend(minima, zone)
+        _, minima = find_extrema(lows, order)
+        t = SanSignals.extrema_trend(minima, z)
+        if t is not None and brk and close < minima[-1][1] - z:
+            t = -1
         if p is None or t is None:
             return SIG.NOSIG
-        if p == t:
-            return SIG.BUY if p > 0 else (SIG.SELL if p < 0 else SIG.SIDEWAYS)
-        if p * t < 0:
-            return SIG.SIDEWAYS
-        return SIG.NOSIG
+        score = p + t
+        if score > 0:
+            return SIG.BUY
+        if score < 0:
+            return SIG.SELL
+        return SIG.SIDEWAYS
 
     peakTroughSIG = peak_trough_sig
 
@@ -487,8 +502,10 @@ class SanSignals:
             return SIG.NOSIG
         highs = list(islice(ind.high, start, end))
         lows = list(islice(ind.low, start, end)) if self.pt_mode == "structure" else None
+        close = ind.close[end - 1] if len(ind.close) == n else None
         return self.peak_trough_sig(
             highs, lows, zone=PT_ZONE_ATR * atr_pips, pip_size=pip, mode=self.pt_mode,
+            close=close,
         )
 
     @staticmethod

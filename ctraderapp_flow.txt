@@ -259,7 +259,7 @@ ASCII (startup):
        │      │     slopes slope_val(ima240|ima30, 5, 21, shift=1)
        │      │     base_slope_sig / slope30_sig (+ _v1: ATR-relative acc, flat-regime hysteresis per symbol), fsig*, fast_sig, micro_wave proxy
        │      └─ Strategy_N(t_sig[, pnl][, symbol_id]) → SIG
-       │            Strategy_8 (live): peak_trough_sig, equal-zone peaks→CLOSE, higher/lower→BUY/SELL
+       │            Strategy_8 (live): peak_trough_sig structure (peaks+troughs score), flat/conflict→CLOSE, >0 BUY, <0 SELL
        │            Strategy_7: base_slope_sig_v1, flat→CLOSE, decel CLOSE if pnl>=2
        │            Strategy_6: MQ4 baseSlope composite, sticky per-symbol state
        │

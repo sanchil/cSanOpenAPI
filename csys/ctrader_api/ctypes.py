@@ -266,7 +266,7 @@ class T_SIG:
     base_slope_sig_v1: SIG = SIG.NOSIG
     slope30_sig_v1: SIG = SIG.NOSIG
 
-    # peak_trough_sig (V1-T29): higher/lower/equal-zone peaks; not yet used
+    # peak_trough_sig (V1-T29/T31): peaks + troughs structure; read by Strategy_8
     peak_trough_sig: SIG = SIG.NOSIG
 
     # Extended slots used by strategies / future ports

@@ -11,7 +11,7 @@ kinetic_acceleration_sig_v1 and splits CLOSE into flat vs. deceleration.
 Strategy_6 remains the MQ4-parity baseline.
 
 Strategy_8 (V1-T30, not MQ4) trades market structure from peak_trough_sig:
-higher peaks → BUY, lower peaks → SELL, equal peak zone → CLOSE.
+peaks + troughs structure → BUY / SELL, flat or conflicting → CLOSE.
 """
 
 from __future__ import annotations
@@ -289,12 +289,16 @@ class CStrategies:
         """
         Peak/trough structure strategy on peak_trough_sig (V1-T29/T30).
 
-          - SIDEWAYS (latest peak in the previous peak's zone) → CLOSE, always
-          - BUY / SELL (higher / lower peaks)                  → BUY / SELL
-          - otherwise (fewer than two peaks, NOSIG)            → NOSIG (hold)
+          - SIDEWAYS (flat or conflicting structure) → CLOSE, always
+          - BUY / SELL (peaks + troughs score > 0 / < 0) → BUY / SELL
+          - otherwise (too few extrema, NOSIG)       → NOSIG (hold)
 
-        Stateless. peak_trough_sig only changes when a new peak is confirmed,
-        so the output is naturally persistent between peaks. An opposite
+        peak_trough_sig defaults to pt_mode="structure" (V1-T31): peaks and
+        troughs weigh equally, and a close beyond the last peak / trough zone
+        counts at once, so a broken uptrend reads SIDEWAYS and closes.
+
+        Stateless. peak_trough_sig changes only on a newly confirmed extremum
+        or a zone break, so the output is naturally persistent. An opposite
         signal closes via the executor policy (no reversal in the same
         cycle); the next bar re-opens on the new side. ``total_trade_profits``
         is unused (no PnL gate) and kept for the shared dispatch signature.

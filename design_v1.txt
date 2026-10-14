@@ -336,16 +336,22 @@ Out of scope (unless a task explicitly reopens them):
         kin_v1_mode="ratio" (V1-T26 baseline): ratio=f/s-1 >= 0 → BUY/SELL;
           < close_limit → CLOSE; else NOSIG.  Gates use 1e-9 tolerance.
         SanSignals(kin_v1_mode=…); CStrategies.reset_state also clears regime.
-    peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips)  (V1-T29;
-        not MQ4; stateless; computed but no strategy reads it yet)
-        find_extrema(order=5, pip_size) on the last 240 closed bars
-        (shift excludes the forming bar); maxima on high, minima on low.
-        Last two extrema: |diff| <= zone → same zone (0), else ±1.
-        pt_mode="peaks" (default): peaks +1 → BUY, -1 → SELL, 0 → SIDEWAYS,
-          < 2 peaks → NOSIG.
-        pt_mode="structure": HH+HL → BUY, LH+LL → SELL, both zone → SIDEWAYS,
-          opposite (expanding/contracting) → SIDEWAYS, one zone + one
-          directional or < 2 extrema → NOSIG. ATR NaN/<=0 → NOSIG.
+    peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips,
+        close=close[shift])  (V1-T29, reworked V1-T31; not MQ4; stateless;
+        read by Strategy_8)
+        find_extrema(order=5) on raw prices of the last 240 closed bars
+        (shift excludes the forming bar); peaks on high, troughs on low.
+        Each side: last two extrema, |diff| <= zone → 0, else ±1.
+        Break override: close > last peak + zone → peaks = +1;
+        close < last trough - zone → troughs = -1.
+        pt_mode="structure" (default): score = peaks + troughs;
+          > 0 → BUY, < 0 → SELL, 0 → SIDEWAYS; < 2 peaks or troughs → NOSIG.
+                     troughs:  higher    flat      lower
+          peaks higher         BUY       BUY       SIDEWAYS
+          peaks flat           BUY       SIDEWAYS  SELL
+          peaks lower          SIDEWAYS  SELL      SELL
+        pt_mode="peaks" (V1-T29 baseline): peaks only, +1 BUY / -1 SELL /
+          0 SIDEWAYS. ATR NaN/<=0 → NOSIG.
     fsig{5,14,30,60,120,240,500} = fast_slow_sig(close[1], ima*[1])
         sign of PPO only (threshold_pct kept for API parity, unused)
     fast_sig = fuse(fuse(fsig5, fsig14), fsig30), or CLOSE if NOSIG
@@ -403,9 +409,10 @@ Out of scope (unless a task explicitly reopens them):
               Drops Strategy_6's fast==HOLD close branch. Threshold:
               CStrategies(decel_profit_close_threshold=2.0).
   Strategy_8  **LIVE DEFAULT** (V1-T30, not MQ4) — market structure on
-              peak_trough_sig (pt_mode="peaks"), stateless, no PnL gate:
-                pt SIDEWAYS (peak in previous peak's zone) → CLOSE (always)
-                pt BUY / SELL (higher / lower peaks)       → that side
+              peak_trough_sig (pt_mode="structure" since V1-T31),
+              stateless, no PnL gate:
+                pt SIDEWAYS (flat / conflicting structure) → CLOSE (always)
+                pt BUY / SELL (peaks + troughs score)      → that side
                 otherwise                                  → NOSIG (hold)
               Opposite side closes via the executor; re-entry next bar.
 
@@ -533,6 +540,7 @@ Out of scope (unless a task explicitly reopens them):
   V1-T28 DONE        capp/physics local extrema helpers (2026-10-15)
   V1-T29 DONE        peak_trough_sig on find_extrema (2026-10-15)
   V1-T30 DONE        Strategy_8 on peak_trough_sig, live default (2026-10-15)
+  V1-T31 DONE        peak_trough_sig: peaks + troughs equal weight, zone break (2026-10-15)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1352,6 +1360,34 @@ Behavior notes:
   - Equal-zone peaks keep returning CLOSE, so no re-entry until a new peak
     breaks the zone. Loss is unbounded until then (no SL; V1-T19).
 
+TASK V1-T31:  [DONE 2026-10-15]  peak_trough_sig rework (TASKS.txt TASK 8)
+
+Request: peaks and troughs equally important. LH+LL → SELL, HH+HL → BUY,
+LH + flat troughs → SELL, flat peaks + HL → BUY.
+Evaluation:
+  - The four stated rules are sound (trend structure plus descending /
+    ascending triangle bias) and mirror each other.
+  - Gap: the mirror cases HH + flat troughs and flat peaks + LL were left
+    undefined (V1-T29 returned NOSIG). Equal weighting means a score
+    peaks + troughs, which gives all four rules and fills the gap (BUY /
+    SELL). Opposite trends (expanding / contracting range) score 0 →
+    SIDEWAYS, as do two flat sides.
+  - Flaw (lag): structure only changed on a confirmed extremum, so after
+    price broke below the last trough an uptrend still read BUY for >= 5
+    more runs. Fixed with the close-beyond-zone break override.
+  - Bug: structure mode compared pip values from find_extrema(pip_size),
+    which are relative to series[0], and highs[0] != lows[0]. Now uses raw
+    prices with zone converted to price (zone × pip_size).
+Delivered: SanSignals.peak_trough_sig(..., mode="structure", close=None)
+score + break override; pt_mode default "structure"; init_sig passes the
+last closed close; Strategy_8 now trades the structure mode (unchanged code).
+Verified offline: all 9 peak/trough combinations on zigzag fixtures match
+the table in section 6; break below the last trough → SIDEWAYS, close
+inside the zone → BUY; break above the last peak in a downtrend → SIDEWAYS;
+mixed highs/lows bases → correct BUY. Same synthetic walk as V1-T30
+(synthetic only, NOT evidence of edge): peaks 58 trades, worst -3.7 pips,
+net -6.4; structure 65 trades, worst -2.3, net +5.2.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1388,6 +1424,7 @@ Behavior notes:
   V1-T28   B       DONE        capp/physics find_extrema (+ scipy find_peaks)
   V1-T29   B       DONE        peak_trough_sig (higher/equal/lower peaks)
   V1-T30   B       DONE        Strategy_8 (peak_trough_sig) — live default
+  V1-T31   B       DONE        peak_trough_sig structure score + break override
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
