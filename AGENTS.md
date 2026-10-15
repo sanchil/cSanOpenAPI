@@ -130,6 +130,8 @@ Legacy `design.txt` tasks:
 | V1-T24 | Done | `capp/physics` covariance-matrix determinant |
 | V1-T25 | Done | MQ4 parity: SMMA indicators (21), slopes 5/21, 2000-bar seed, Strategy_6, `--dry-run` |
 | V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (intentional MQ4 deviation; live default until V1-T30) |
+| V1-T34 | Done | `slope_distribution_sig` → `T_SIG.slope_dist_sig` / `slope_dist_data` (skew + median side, two-sided tail veto); no strategy |
+| V1-T33 | Done | `capp/physics/metrics.py` MarketMetrics port (pure functions, not wired; supersedes V1-T11) |
 | V1-T28 | Done | `capp/physics` local extrema: `find_extrema` (NumPy) / `find_extrema_scipy` (find_peaks) |
 | V1-T29 | Done | `peak_trough_sig` → `T_SIG.peak_trough_sig` (higher/equal-zone/lower peaks); used by Strategy_8 |
 | V1-T30 | Done | Strategy_8 on `peak_trough_sig` (SIDEWAYS → CLOSE, BUY/SELL → side, else hold) — **live default** |
@@ -148,6 +150,7 @@ Legacy `design.txt` tasks:
 - `base_slope_sig_v1` / `slope30_sig_v1` = `kinetic_acceleration_sig_v1(val1, val2, atr_pips, prev_flat=…)` via `SanSignals._kin_v1`. Flat regime with hysteresis (`|slow|/atr_pips` < 0.01 → flat, ≥ 0.02 → trending, between → previous regime, stored per symbol and series) → SIDEWAYS when flat. Trending, `kin_v1_mode="acc"` (default): `acc = sign(s)·(f-s)/atr_pips`; `f·s>0 and acc ≥ 0.002` → BUY/SELL, `f·s≤0 or acc < -0.010` (slope30 -0.015) → CLOSE, else NOSIG. `kin_v1_mode="ratio"` keeps the V1-T26 `f/s-1` gates (0 / -0.20 / -0.30) for comparison
 - `peak_trough_sig` = `SanSignals.peak_trough_sig(high, low, zone=0.5·atr_pips, close=close[shift])` on the last 240 closed bars, `find_extrema(order=5)` on raw prices. Each side's last two extrema → +1 / 0 (within zone) / -1; a close beyond the last peak (trough) zone forces peaks +1 (troughs -1). `pt_mode="structure"` (default, V1-T31): score = peaks + troughs, > 0 → BUY, < 0 → SELL, 0 → SIDEWAYS, too few extrema → NOSIG. `pt_mode="peaks"`: peaks only. Stateless; not MQ4; read by Strategy_8 (V1-T29/T30/T31)
 - `base_slope_sig_v2` = `kinetic_acceleration_sig_v2(f, s, atr_pips)` on `slope_val(ima{kin_v2_period}, 5, 21)` (default ima120). `old = (21·s − 5·f)/16`; in ATR/bar: `|f| < 0.01` → SIDEWAYS if `|o| < 0.02` else CLOSE; `|f| < 0.02` → NOSIG (dead band); `sign(f)·(f−o) ≥ 0.01` → BUY/SELL by sign(f); `≤ −0.03` → CLOSE; else NOSIG. Stateless; not MQ4; read by Strategy_9 (V1-T32)
+- `slope_dist_sig` = `SanSignals.slope_distribution_sig(slope_distribution(close, 60, shift))` (V1-T34, not MQ4; no strategy reads it yet). Quantile shape of 59 one-bar slopes: Kelly skew `(P90+P10−2·P50)/(P90−P10)` and per-side tail ratios. Both tail ratios > 2.6 → NOTRADE (whipsaw); Kelly ≤ −0.25 with median > 0 → BUY; Kelly ≥ +0.25 with median < 0 → SELL; else NOSIG. Data in `T_SIG.slope_dist_data`
 - `fsigN = fast_slow_sig(close[1], imaN[1])`; `fast_sig = fuse(fuse(fsig5, fsig14), fsig30)` (CLOSE if NOSIG)
 - `micro_wave_sig` is an interim proxy (true MQ4 `microWaveSIG` not ported)
 
@@ -243,6 +246,7 @@ Loaded by `csys.ctrader_api.config.load_config()`. Full bring-up and troubleshoo
 - `math`: `covariance_matrix_2x2`, `matrix_determinant`
 - `metrics`: `covariance_matrix_determinant(A, B, n)` — det of 2×2 sample cov over last `n` bars (not wired into the bar cycle)
 - `metrics`: `find_extrema(series, order, pip_size)` / `find_extrema_scipy(series, prominence=, distance=, width=, pip_size=)` → `(maxima, minima)` lists of `(index, value)`; plateaus at leftmost bar; used by `SanSignals.peak_trough_sig` (V1-T29)
+- `metrics` (V1-T33): MQ4 `class MarketMetrics` as pure functions — ADX physics (`adx_potential`, `adx_kinetic`, `adx_vector`), volatility (`atr_kinetic`, `atr_scale`, `volatility_anomaly`, `efficiency_ratio`, `vwcm`, `trend_quality`, `trend_accel_strength`, `overall_market_force`), slope geometry (`expansion_compression_ratio`, `slope_acceleration_ratio`, `fractal_alignment`, `geometric_fan_score`, `layered_momentum_filter`), retention, hold scores (`bayesian_hold_score`, `neuron_hold_score`, combined scores), fusion (`analyse_history`, `fuse_sig_log_odds`, `fuse_probability`) and fast-vs-slow pair scores. `shift=1` default; MQ4 globals are parameters (`pip_size`, `period_seconds`); camelCase aliases in the module. MQ4 bugs fixed and skipped members are listed in the section header. Not wired into any signal or strategy
 - Series: **oldest → newest**; no Open API / Twisted imports
 
 **`capp.ctraderapp`**
@@ -301,7 +305,7 @@ python-dotenv==1.2.3
 numpy==2.5.2
 fastapi==0.141.1      # main_fastapi.py experiment only
 uvicorn==0.52.4       # main_fastapi.py experiment only
-scipy==1.17.1         # capp.physics.find_extrema_scipy only (lazy import)
+scipy==1.17.1         # capp.physics find_extrema_scipy / layered_momentum_filter (lazy imports)
 ```
 
-`scipy` is used only by `capp.physics.find_extrema_scipy` (imported lazily); nothing on the live path imports it.
+`scipy` is used only by `capp.physics.find_extrema_scipy` and `layered_momentum_filter` (imported lazily); nothing on the live path imports it.

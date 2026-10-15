@@ -69,8 +69,9 @@ Out of scope (unless a task explicitly reopens them):
       python-dotenv==1.2.3
       numpy==2.5.2              # capp.physics
       fastapi==0.141.1, uvicorn==0.52.4   # only for main_fastapi.py experiment
-      scipy==1.17.1             # capp.physics.find_extrema_scipy only (lazy
-                                # import; nothing on the live path needs it)
+      scipy==1.17.1             # capp.physics find_extrema_scipy and
+                                # layered_momentum_filter (lazy imports;
+                                # nothing on the live path needs it)
     requirements.txt / environment.yaml are full freezes of a large ML env
     (torch etc.) — use only to clone the whole conda env, not for the app.
 
@@ -178,7 +179,8 @@ Out of scope (unless a task explicitly reopens them):
     strategies/strategies.py  # CStrategies Strategy_1..8 + _HSigState
     utils.py              # SanUtils + PositionPnL (pure PnL averaging)
     physics/{math,metrics}.py # NumPy cov-matrix determinant (V1-T24);
-                              # find_extrema / find_extrema_scipy (V1-T28)
+                              # find_extrema / find_extrema_scipy (V1-T28);
+                              # MarketMetrics atomic truths (V1-T33)
   main.py                 # PRIMARY entry: active_strategy=8, --dry-run flag
   main_twisted.py         # optional OHLCV HTTP helper (port 8080)
   main_fastapi.py         # incomplete experiment — do not use
@@ -346,6 +348,16 @@ Out of scope (unless a task explicitly reopens them):
           |f| < 0.02 → NOSIG (dead band, no new entry)
           accel = sign(f)·(f - o) >= +0.01 → BUY/SELL by sign(f)
           accel <= -0.03 → CLOSE (decel); else NOSIG (steady trend, hold)
+    slope_dist_sig = slope_distribution_sig(slope_dist_data)   (V1-T34; not
+        MQ4; stateless; computed every bar, read by no strategy yet)
+        slope_dist_data = slope_distribution(close, 60, shift): 59 one-bar
+        slopes (pips/bar) → val1 Kelly skew (P90+P10-2·P50)/(P90-P10),
+        val2 upper tail (P90-P50)/(P75-P50), val3 lower tail
+        (P50-P10)/(P50-P25) (normal ≈ 1.90), val4 median, val5 count.
+          NaN shape (flat / short) → NOSIG
+          min(val2, val3) > 2.6 → NOTRADE (heavy tails both sides: whipsaw)
+          Kelly <= -0.25 & median > 0 → BUY; Kelly >= +0.25 & median < 0 → SELL
+          else NOSIG (symmetric, or skew vs. median conflict)
     peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips,
         close=close[shift])  (V1-T29, reworked V1-T31; not MQ4; stateless;
         read by Strategy_8)
@@ -558,6 +570,8 @@ Out of scope (unless a task explicitly reopens them):
   V1-T30 DONE        Strategy_8 on peak_trough_sig, live default (2026-10-15)
   V1-T31 DONE        peak_trough_sig: peaks + troughs equal weight, zone break (2026-10-15)
   V1-T32 DONE        kinetic_acceleration_sig_v2 + Strategy_9 (2026-10-15)
+  V1-T33 DONE        MarketMetrics port into capp/physics/metrics.py (2026-10-15)
+  V1-T34 DONE        slope_distribution_sig in T_SIG (no strategy) (2026-10-15)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -867,6 +881,11 @@ Non-goals: full commented cBot Strategy_5 physics (breakout probability).
 
 V1-T11  Selective MarketMetrics v1 (metrics package)
 ----------------------------------------------------
+Status: DONE via V1-T33 (2026-10-15). TASKS.txt TASK 10 widened the scope to
+every useful MarketMetrics member, in capp/physics/metrics.py rather than a
+new capp/metrics package. Hold-score functions are included as pure
+functions; wiring them stays V1-T12.
+
 Goal:
   Port only building blocks needed by live path / near-term strategies —
   not the entire mq4 class.
@@ -1183,6 +1202,7 @@ Critical path for safe extension of strategies:
   Bar → trade             capp.ctraderapp.CTraderApp.run_signal_cycle
   Physics / cov-det       capp.physics.metrics.covariance_matrix_determinant
   Physics / extrema       capp.physics.metrics.find_extrema, find_extrema_scipy
+  Physics / MarketMetrics capp.physics.metrics (V1-T33; MQ4 class MarketMetrics)
   Lifecycle diagram       ctraderapp_flow.txt
   Historical design log   design.txt
   Forward blueprint       design_v1.txt  (this file)
@@ -1434,6 +1454,92 @@ evidence of edge), trend strength ×1:
   At ×0.3 trend strength v2 [120] averages ~0.6 pip/trade, so spread will
   decide it; compare on real bars (V1-T17) before making it live.
 
+TASK V1-T33:  [DONE 2026-10-15]  MarketMetrics port (TASKS.txt TASK 10)
+
+Request: import the useful members of MQ4 class MarketMetrics into
+capp/physics/metrics.py, using math / NumPy / SciPy in place of MQ4's
+hand-rolled stats, without changing current behaviour.
+Delivered (pure functions, oldest → newest series, shift=1 default,
+camelCase aliases; exported from capp.physics; nothing wired in):
+  helpers      slope_range (Stats::slopeRange_v2), histogram_magnitude
+  ADX          adx_potential, adx_kinetic, adx_vector
+  volatility   atr_kinetic, atr_kinetic_norm, atr_scale, regime_interpolate,
+               volatility_efficiency, volatility_anomaly, efficiency_ratio,
+               vwcm, vwcm_raw, trend_quality, is_trend_accelerating,
+               trend_accel_strength, overall_market_force
+  geometry     expansion_compression_ratio, slope_acceleration_ratio (fMSR),
+               fmsr_norm, geometric_fan_score, fractal_alignment,
+               kinematic_acceleration, layered_momentum_filter
+  retention    linear_time_retention, vol_adaptive_retention,
+               hybrid_retention, hybrid_retention_v2, dynamic_spread_limit
+  hold scores  bayesian_next_bar_prob, bayesian_hold_score,
+               neuron_hold_score, hyperbolic_combined_score,
+               cobb_douglas_combined_score
+  fusion       analyse_history (→ csys DataPointStats), fuse_sig_log_odds,
+               fuse_probability
+  pair scores  universal_slopes_score / universal_prob_score,
+               market_slopes_heat / market_prob_heat, arc_tan_score,
+               slopes_phase_score, probability_phase_score, normalized_diff,
+               log_ratio_score, cosine_similarity, kinetic_alignment,
+               cosine_prob_similarity, kinetic_prob_alignment,
+               is_squeeze_reversal
+MQ4 bugs found (fixed in the port, MQ4 behaviour documented):
+  - adxVector and layeredMomentumFilter call adxPotential(14, 1), which
+    binds adx=14 → constant 0.49. MQ4 layeredMomentumFilter therefore
+    always returned 0 (gate power < 0.75). Port takes the real ADX.
+  - trendQuality calls adxKinetic(50.0, period) → force always 1.0;
+    trend_quality(adx=None) reproduces it, adx=… gives force × smoothness.
+MQ4 globals became parameters (pip_size, period_seconds, point; iATR /
+iADX / iStdDev values passed in). Prob variants reuse the slope variants
+on p - 0.5; slopesPhaseScore uses the closed form 2fs/(f²+s²).
+Not ported: getFeatureVector, marketIntensity, marketRegime,
+getMarketActionCombinedScore (need RSI/MFI V1-T13 and stored hold scores;
+intensity/regime are vector norms — V1-T12).
+New canonical type: csys.ctypes.DataPointStats (value, weight, accuracy).
+Verified offline: vectorised / closed-form ports match literal MQ4
+transcriptions on 300 random cases (efficiency_ratio at shifts 0/1/3,
+slope_range, histogram_magnitude, scipy skew/kurtosis vs Stats formulas,
+slopes_phase_score vs atan2+sin, universal_prob_score, both combined
+scores); spot values checked; app import unchanged.
+
+TASK V1-T34:  [DONE 2026-10-15]  slope_distribution_sig (TASKS.txt TASK 11)
+
+Request: signal from the shape of the slope distribution — 20 candles → 19
+slopes in ~5 buckets; left skew → BUY, right skew → SELL, normal → NOSIG,
+very peaked (high kurtosis) → avoid. Add to T_SIG only, no strategy.
+Evaluation (synthetic slope regimes, 3000 windows each — NOT evidence of
+edge, real-bar validation pending V1-T17):
+  - Sound core: "many small bars one way, a tail of sharp bars the other"
+    is a real stair-step trend shape, and avoiding fat two-sided tails
+    (whipsaw) is a sensible entry veto.
+  - Flaw 1, direction: skew measures asymmetry around the mean, not
+    direction. Downtrend with sharp drops = left skew → literal rule BUY;
+    up-breakout with jumps = right skew → literal SELL. Fix: the median
+    side must agree with the skew (conflicts → NOSIG).
+  - Flaw 2, sample size: at 19 slopes |moment skew| > 0.5 in 29% of pure
+    Gaussian noise windows (excess-kurtosis sd 0.75). Fix: 60 bars / 59
+    slopes (Kelly skew noise p95 0.25).
+  - Flaw 3, moments: one news bar flipped moment skew (SELL in ~50% of
+    spiked-noise windows); M1 returns are fat-tailed, so excess kurtosis > 2
+    in ~60% of ordinary t(3) windows; and a one-sided kurtosis cap vetoed
+    the very tail that makes a grind skewed (~50% NOTRADE). Fix: quantile
+    measures — Kelly skew (sees tails >= ~10% of bars, ignores 1-2
+    outliers) and per-side tail ratios, veto only when both sides are heavy.
+  - Buckets dropped: quantiles use the raw slopes; a 5-bin histogram of 19
+    values (~4 per bin) only adds noise.
+  - Symmetric → NOSIG (no exit).
+Delivered: stats.slope_distribution (→ DTYPE), SanSignals
+.slope_distribution_sig (+ module function, slopeDistributionSIG alias),
+SD_BARS=60 / SD_SKEW=0.25 / SD_TAIL=2.6, T_SIG.slope_dist_sig /
+slope_dist_data filled in init_sig. Uses SIG.NOTRADE for the veto.
+Results at the defaults (BUY / SELL / NOSIG / NOTRADE %):
+    gaussian noise            2.2 /  2.5 / 94.8 /  0.6
+    grind up (sharp drops)   85.0 /  0.0 / 11.3 /  3.8
+    grind down (sharp pops)   0.0 / 85.5 / 10.2 /  4.2
+    downtrend + crash tail    0.0 /  0.0 / 96.9 /  3.1   (literal rule: BUY)
+    single news spike         2.9 /  2.3 / 94.3 /  0.5
+    whipsaw (big bars ±)      2.2 /  1.9 / 19.6 / 76.2
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1450,8 +1556,9 @@ evidence of edge), trend strength ×1:
   V1-T08   A       PENDING     Integration harness (demo)
   V1-T09   B       PENDING     Port true MicroWaveSIG
   V1-T10   B       PENDING     Wire stencil kinematics strategy path
-  V1-T11   B       PENDING     Selective MarketMetrics v1
-  V1-T12   B       PENDING     Hold-score / FEATURE_VECTOR (opt)
+  V1-T11   B       DONE        Selective MarketMetrics v1 (via V1-T33)
+  V1-T12   B       PENDING     Hold-score wiring / FEATURE_VECTOR (opt;
+                               score functions exist since V1-T33)
   V1-T13   B       PENDING     RSI / MFI / OBV indicators (opt)
   V1-T14   C       PENDING     Extract PnL service
   V1-T15   C       PENDING     Serialize multi-symbol cycles (opt)
@@ -1472,6 +1579,8 @@ evidence of edge), trend strength ×1:
   V1-T30   B       DONE        Strategy_8 (peak_trough_sig) — live default
   V1-T31   B       DONE        peak_trough_sig structure score + break override
   V1-T32   B       DONE        kinetic v2 (tail vs. history, ima120) + Strategy_9
+  V1-T33   B       DONE        MarketMetrics port (capp.physics.metrics)
+  V1-T34   B       DONE        slope_distribution_sig (T_SIG only, no strategy)
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 

@@ -244,6 +244,21 @@ class DTYPE:
 
 
 @dataclass
+class DataPointStats:
+    """MQ4 DataPointStats — one fusion input derived from a signal history
+    (MarketMetrics::analyseHistory → fuse_probability).
+
+      value    — direction × magnitude in -3..+3 (0 = no evidence)
+      weight   — consistency weight, 0.5..3.0
+      accuracy — hit-rate proxy, 0.5..0.75
+    """
+
+    value: int = 0
+    weight: float = 0.1
+    accuracy: float = 0.5
+
+
+@dataclass
 class T_SIG:
     """Tactical signal bundle for one IndData snapshot / cycle.
 
@@ -273,6 +288,11 @@ class T_SIG:
 
     # peak_trough_sig (V1-T29/T31): peaks + troughs structure; read by Strategy_8
     peak_trough_sig: SIG = SIG.NOSIG
+
+    # slope_distribution_sig (V1-T34): shape of 1-bar close slopes; BUY / SELL /
+    # NOTRADE (whipsaw veto) / NOSIG. No strategy reads it yet.
+    slope_dist_sig: SIG = SIG.NOSIG
+    slope_dist_data: DTYPE = field(default_factory=DTYPE)
 
     # Extended slots used by strategies / future ports
     micro_wave_sig: SIG = SIG.NOSIG

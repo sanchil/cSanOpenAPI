@@ -14,6 +14,9 @@ a close-beyond-zone break override; computed in init_sig, read by Strategy_8.
 Not MQ4 (V1-T32): kinetic_acceleration_sig_v2 — stateless, compares the
 5-bar tail slope with the 16 bars before it, on ima{kin_v2_period} (default
 120, faster than MQ4's ima240); read by Strategy_9.
+Not MQ4 (V1-T34): slope_distribution_sig — shape of the 1-bar close-slope
+distribution (Kelly skew + median side, two-sided tail veto). Computed in
+init_sig; no strategy reads it yet.
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -31,7 +34,7 @@ from csys.ctypes import DTYPE, IndData, SIG, T_SIG
 
 from capp.physics import find_extrema
 
-from .stats import mql_at, resolve_pip, slope_val
+from .stats import mql_at, resolve_pip, slope_distribution, slope_val
 
 # MQ4 SS::update slope windows (fast, wide) for baseSlope / slope30
 SLOPE_DENOM = 5
@@ -63,6 +66,12 @@ KIN_V2_OPEN = 0.01         # tail must beat history by this much to enter
 KIN_V2_CLOSE = -0.03       # tail slower than history by this much → CLOSE
 KIN_V2_PERIOD = 120        # ima period the slopes are taken on
 KIN_V2_PERIODS = (5, 14, 30, 60, 120, 240, 500)
+
+# slope_distribution_sig defaults (not MQ4; V1-T34). Calibrated on synthetic
+# Gaussian slopes at 59 samples: |Kelly| p95 ≈ 0.25, min tail ratio p95 ≈ 2.2.
+SD_BARS = 60               # closed bars → 59 one-bar slopes
+SD_SKEW = 0.25             # |Kelly skewness| needed for BUY / SELL
+SD_TAIL = 2.6              # both tail ratios above this → NOTRADE (whipsaw)
 
 # peak_trough_sig defaults (not MQ4; untuned starting points, V1-T29).
 PT_ORDER = 5               # find_extrema order (distinct values each side)
@@ -346,6 +355,51 @@ class SanSignals:
     kineticAccelerationSIG_v2 = kinetic_acceleration_sig_v2
 
     @staticmethod
+    def slope_distribution_sig(
+        shape: DTYPE,
+        *,
+        skew_th: float = SD_SKEW,
+        tail_th: float = SD_TAIL,
+    ) -> SIG:
+        """
+        Slope-distribution signal (TASKS.txt TASK 11; not MQ4, V1-T34).
+        Stateless. ``shape`` is stats.slope_distribution (val1 Kelly skew,
+        val2 / val3 upper / lower tail ratio, val4 median slope).
+
+        - NaN shape (flat window / too few bars)      → NOSIG
+        - both tail ratios > tail_th (whipsaw)        → NOTRADE (no entries)
+        - Kelly <= -skew_th and median > 0            → BUY  (stair-step up:
+          many small up bars, a tail of sharp drops)
+        - Kelly >= +skew_th and median < 0            → SELL (mirror)
+        - otherwise (symmetric, or skew vs. median conflict) → NOSIG
+
+        Deviations from the TASK 11 proposal (synthetic evaluation, V1-T34):
+        - Skew alone has no direction: a downtrend with sharp drops is left
+          skewed and an up-breakout right skewed, so "left skew → BUY" fired
+          against the trend. The median side must agree.
+        - 59 slopes, not 19: at 19 samples |moment skew| > 0.5 in ~29% of
+          pure-noise windows (~10% at 59).
+        - Quantile measures instead of moment skew / kurtosis and buckets:
+          one news bar flipped moment skew (SELL in ~50% of spiked noise
+          windows), and a one-sided kurtosis cap vetoed the very tail that
+          makes a grind skewed. The veto needs heavy tails on both sides.
+        - Symmetric shape is NOSIG (no exit): absence of skew is not evidence
+          of a reversal.
+        """
+        kelly, upper, lower, median = shape.val1, shape.val2, shape.val3, shape.val4
+        if kelly != kelly or upper != upper or lower != lower or median != median:
+            return SIG.NOSIG
+        if min(upper, lower) > tail_th:
+            return SIG.NOTRADE
+        if kelly <= -skew_th and median > 0.0:
+            return SIG.BUY
+        if kelly >= skew_th and median < 0.0:
+            return SIG.SELL
+        return SIG.NOSIG
+
+    slopeDistributionSIG = slope_distribution_sig
+
+    @staticmethod
     def extrema_trend(points: Sequence[Tuple[int, float]], zone: float) -> Optional[int]:
         """Compare the last two extrema: +1 higher, -1 lower, 0 same zone
         (|diff| <= zone), None if fewer than two."""
@@ -528,6 +582,12 @@ class SanSignals:
             t.kin_v2_data.val1, t.kin_v2_data.val2, atr_pips
         )
 
+        # --- slope distribution shape (V1-T34): 1-bar close slopes ---
+        t.slope_dist_data = slope_distribution(
+            ind.close, SD_BARS, sh, pip_size=pip, point=point
+        )
+        t.slope_dist_sig = self.slope_distribution_sig(t.slope_dist_data)
+
         # --- peak/trough structure (V1-T29): closed bars, ATR-sized zone ---
         t.peak_trough_sig = self._peak_trough(ind, sh, atr_pips, resolve_pip(pip, point))
 
@@ -642,6 +702,10 @@ def kinetic_acceleration_sig_v2(
     **kwargs: float,
 ) -> SIG:
     return SanSignals.kinetic_acceleration_sig_v2(fast_slope, slow_slope, atr_pips, *args, **kwargs)
+
+
+def slope_distribution_sig(shape: DTYPE, **kwargs: float) -> SIG:
+    return SanSignals.slope_distribution_sig(shape, **kwargs)
 
 
 def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:

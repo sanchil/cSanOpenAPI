@@ -9,6 +9,9 @@ Input series are **oldest → newest** (IndData deques).
 MQL/cBot use index 0 = newest/current. We bridge with ``mql_at`` / ``mql_index``
 so formulas match the reference code with the same ``shift`` meaning
 (0 = newest, 1 = previous closed bar, …).
+
+Not MQ4 (V1-T34): ``slope_distribution`` — quantile shape of 1-bar slopes
+(Kelly skewness, per-side tail ratios) for SanSignals.slope_distribution_sig.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from typing import Union
+
+import numpy as np
 
 from csys.ctypes import DTYPE
 
@@ -141,3 +146,49 @@ def compute_stencil_kinematics(
 
 # Alias matching design.txt
 computeStencilKinematics = compute_stencil_kinematics
+
+
+def slope_distribution(
+    sig: Series,
+    bars: int = 60,
+    shift: int = 1,
+    *,
+    pip_size: float = 0.0,
+    point: float = 0.0,
+) -> DTYPE:
+    """
+    Shape of the distribution of 1-bar slopes over the last ``bars`` closed
+    bars (``bars - 1`` slopes in pips/bar), from quantiles only (V1-T34).
+
+    val1 = Kelly skewness (P90 + P10 - 2·P50) / (P90 - P10), -1..1;
+           < 0 = left tail (bulk sits above the median's tail side)
+    val2 = upper tail ratio (P90 - P50) / (P75 - P50)   (normal ≈ 1.90)
+    val3 = lower tail ratio (P50 - P10) / (P50 - P25)   (normal ≈ 1.90)
+    val4 = median slope, pips/bar
+    val5 = number of slopes
+
+    Quantiles see a tail holding >= ~10% of bars but ignore one or two
+    outliers, so a single news bar cannot flip the reading (moment skew /
+    kurtosis can). A zero spread (flat or too few bars) leaves val1..val3 NaN;
+    a zero half-spread makes that side's tail ratio inf.
+    """
+    dt = DTYPE()
+    n = len(sig)
+    end = n - shift
+    if bars < 3 or shift < 0 or end - bars < 0:
+        return dt
+    w = np.asarray(sig, dtype=float)[end - bars:end]
+    if not np.isfinite(w).all():
+        return dt
+    slopes = np.diff(w) / resolve_pip(pip_size, point)
+    p10, p25, p50, p75, p90 = np.quantile(slopes, [0.10, 0.25, 0.50, 0.75, 0.90])
+    dt.val4 = float(p50)
+    dt.val5 = float(slopes.size)
+    if p90 > p10:
+        dt.val1 = float((p90 + p10 - 2.0 * p50) / (p90 - p10))
+        dt.val2 = float((p90 - p50) / (p75 - p50)) if p75 > p50 else math.inf
+        dt.val3 = float((p50 - p10) / (p50 - p25)) if p50 > p25 else math.inf
+    return dt
+
+
+slopeDistribution = slope_distribution

@@ -15,11 +15,13 @@ from .signals import (
     kinetic_acceleration_sig_v1,
     kinetic_acceleration_sig_v2,
     peak_trough_sig,
+    slope_distribution_sig,
 )
 from .stats import (
     compute_stencil_kinematics,
     computeStencilKinematics,
     mql_at,
+    slope_distribution,
     slope_val,
     slopeVal,
 )
@@ -34,7 +36,9 @@ __all__ = [
     "kinetic_acceleration_sig_v1",
     "kinetic_acceleration_sig_v2",
     "peak_trough_sig",
+    "slope_distribution_sig",
     "fuse_sig",
+    "slope_distribution",
     "slope_val",
     "slopeVal",
     "compute_stencil_kinematics",

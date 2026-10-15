@@ -310,7 +310,7 @@ class CStrategies:
         _ = total_trade_profits
         pt = t_sig.peak_trough_sig
         s7 = self.strategy_7(t_sig, total_trade_profits)
-        print(f"Strategy 8: Peak/Trough Signal: {pt}, Strategy 7 Signal: {s7}")        
+        print(f"Strategy 8: Peak/Trough Signal: {pt}, Strategy 7 Signal: {s7}")
         if pt == SIG.SIDEWAYS:
             return SIG.CLOSE
         if pt in (SIG.BUY, SIG.SELL):
