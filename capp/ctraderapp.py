@@ -77,8 +77,7 @@ class CTraderApp:
         # Long window so SMMA ima240/ima500 converge (MQ4 MAs see full history)
         self.bar_count = DEFAULT_HISTORY_BARS
         self.last_bar_time: Optional[float] = None
-#        self.fxpair_arr = [1, 4]  # EURUSD, USDJPY (demo symbol ids; broker-dependent)
-        self.fxpair_arr = [4]  # EURUSD, USDJPY (demo symbol ids; broker-dependent)
+        self.fxpair_arr = [1, 4]  # EURUSD, USDJPY (demo symbol ids; broker-dependent)
         # Track open-minute of the last committed live bar per symbol
         self._last_live_bar_minutes: Dict[int, int] = {}
         self._hist_pending = 0

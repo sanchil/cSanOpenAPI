@@ -266,6 +266,11 @@ class T_SIG:
     base_slope_sig_v1: SIG = SIG.NOSIG
     slope30_sig_v1: SIG = SIG.NOSIG
 
+    # kinetic_acceleration_sig_v2 (V1-T32, Strategy_9): SIDEWAYS = dead,
+    # CLOSE = stalled / decelerating tail; slopes of ima{kin_v2_period}
+    base_slope_sig_v2: SIG = SIG.NOSIG
+    kin_v2_data: DTYPE = field(default_factory=DTYPE)
+
     # peak_trough_sig (V1-T29/T31): peaks + troughs structure; read by Strategy_8
     peak_trough_sig: SIG = SIG.NOSIG
 

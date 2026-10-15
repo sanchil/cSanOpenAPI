@@ -4,12 +4,16 @@ SanSignals / HSIG core — design.txt execution path.
 Migrated from:
   SanSignals::kineticAccelerationSIG
   (+ kinetic_acceleration_sig_v1 — intentional redesign, TASKS.txt TASK 3/4)
+  (+ kinetic_acceleration_sig_v2 — tail vs. history, TASKS.txt TASK 9)
 
 Deviation (V1-T26/T27): SanSignals keeps per-(symbol, series) flat-regime
 state for kinetic_acceleration_sig_v1 hysteresis; MQ4 SanSignals is stateless.
 Not MQ4 (V1-T29/T31): peak_trough_sig — market structure from find_extrema
 peaks and troughs weighted equally (score = peak trend + trough trend), with
 a close-beyond-zone break override; computed in init_sig, read by Strategy_8.
+Not MQ4 (V1-T32): kinetic_acceleration_sig_v2 — stateless, compares the
+5-bar tail slope with the 16 bars before it, on ima{kin_v2_period} (default
+120, faster than MQ4's ima240); read by Strategy_9.
   SanSignals::fastSlowSIG
   HSIG::fuseSIG
   HSIG::initSIG  (fast path: fsig* + base/slope30 kinetic + fused fastSIG)
@@ -52,6 +56,14 @@ KIN_V1_CLOSE_LIMIT_SLOPE30 = -0.30
 KIN_V1_MODES = ("acc", "ratio")
 _KIN_V1_EPS = 1e-9         # float tolerance on the gates
 
+# kinetic_acceleration_sig_v2 defaults (not MQ4; untuned, V1-T32). ATR per bar.
+KIN_V2_FLAT = 0.02         # |tail| >= this: tail has energy, may enter
+KIN_V2_STALL = 0.01        # |tail| <  this: tail stalled → CLOSE / SIDEWAYS
+KIN_V2_OPEN = 0.01         # tail must beat history by this much to enter
+KIN_V2_CLOSE = -0.03       # tail slower than history by this much → CLOSE
+KIN_V2_PERIOD = 120        # ima period the slopes are taken on
+KIN_V2_PERIODS = (5, 14, 30, 60, 120, 240, 500)
+
 # peak_trough_sig defaults (not MQ4; untuned starting points, V1-T29).
 PT_ORDER = 5               # find_extrema order (distinct values each side)
 PT_LOOKBACK = 240          # closed bars scanned for extrema
@@ -68,6 +80,7 @@ class SanSignals:
         *,
         kin_v1_mode: str = "acc",
         pt_mode: str = "structure",
+        kin_v2_period: int = KIN_V2_PERIOD,
     ) -> None:
         # MQL SHIFT for closed-bar analysis (1 = previous bar if [0] is forming)
         self.default_shift = int(default_shift)
@@ -77,6 +90,9 @@ class SanSignals:
         if pt_mode not in PT_MODES:
             raise ValueError(f"pt_mode must be one of {PT_MODES}")
         self.pt_mode = pt_mode
+        if int(kin_v2_period) not in KIN_V2_PERIODS:
+            raise ValueError(f"kin_v2_period must be one of {KIN_V2_PERIODS}")
+        self.kin_v2_period = int(kin_v2_period)
         # kinetic_acceleration_sig_v1 flat regime per (symbol_id, series label)
         self._kin_v1_flat: Dict[Tuple[int, str], bool] = {}
 
@@ -269,6 +285,67 @@ class SanSignals:
     kineticAccelerationSIG_v1 = kinetic_acceleration_sig_v1
 
     @staticmethod
+    def kinetic_acceleration_sig_v2(
+        fast_slope: float,
+        slow_slope: float,
+        atr_pips: float,
+        n_fast: int = SLOPE_DENOM,
+        n_slow: int = SLOPE_DENOM_WIDE,
+        *,
+        flat: float = KIN_V2_FLAT,
+        stall: float = KIN_V2_STALL,
+        open_: float = KIN_V2_OPEN,
+        close_: float = KIN_V2_CLOSE,
+    ) -> SIG:
+        """
+        Kinetic acceleration v2 — tail energy vs. history (TASKS.txt TASK 9;
+        not MQ4, used by Strategy_9). Stateless.
+
+        The slow slope over n_slow bars contains the fast one, so the history
+        before the tail is old = (n_slow·s - n_fast·f) / (n_slow - n_fast),
+        the slope over bars [n_fast, n_slow]. Comparing f with old (not s)
+        removes the overlap: f - old = n_slow/(n_slow-n_fast) · (f - s).
+        f, o are ATR per bar; direction comes from the tail (d = sign f), so
+        a tail that has turned against the history reads at once.
+
+        - bad input / ATR <= 0 / n_slow <= n_fast → NOSIG
+        - |f| <  stall → SIDEWAYS if |o| < flat (dead market) else CLOSE
+                         (stalled after a move)
+        - |f| <  flat  → NOSIG (dead band: hold, no new entry)
+        - accel = d·(f - o) >= open_  → BUY/SELL by sign of f
+          (|f|-|o| same direction, |f|+|o| when the tail flipped)
+        - accel <= close_ → CLOSE (tail decelerating against history)
+        - else            → NOSIG (steady trend: hold)
+
+        Deviation from the TASK 9 proposal: the stall/flat dead band. With a
+        single |f| < flat gate the signal flipped CLOSE/BUY every bar or two
+        while |f| sat near the gate (synthetic walk: 14-19% of trades <= 5
+        bars, vs ~2% with the band). Entry speed is set by the MA the slopes
+        come from (SanSignals.kin_v2_period), not by these gates.
+        """
+        if fast_slope != fast_slope or slow_slope != slow_slope or atr_pips != atr_pips:
+            return SIG.NOSIG
+        if atr_pips <= 0.0 or n_slow <= n_fast:
+            return SIG.NOSIG
+        old = (n_slow * slow_slope - n_fast * fast_slope) / (n_slow - n_fast)
+        f, o = fast_slope / atr_pips, old / atr_pips
+
+        energy = abs(f)
+        if energy < stall:
+            return SIG.SIDEWAYS if abs(o) < flat else SIG.CLOSE
+        if energy < flat:
+            return SIG.NOSIG
+        d = 1.0 if f > 0.0 else -1.0
+        accel = d * (f - o)
+        if accel >= open_ - _KIN_V1_EPS:
+            return SIG.BUY if d > 0.0 else SIG.SELL
+        if accel <= close_ + _KIN_V1_EPS:
+            return SIG.CLOSE
+        return SIG.NOSIG
+
+    kineticAccelerationSIG_v2 = kinetic_acceleration_sig_v2
+
+    @staticmethod
     def extrema_trend(points: Sequence[Tuple[int, float]], zone: float) -> Optional[int]:
         """Compare the last two extrema: +1 higher, -1 lower, 0 same zone
         (|diff| <= zone), None if fewer than two."""
@@ -442,6 +519,15 @@ class SanSignals:
             close_acc=KIN_V1_CLOSE_ACC_SLOPE30, close_limit=KIN_V1_CLOSE_LIMIT_SLOPE30,
         )
 
+        # --- v2 kinetic (Strategy_9): tail vs. history on ima{kin_v2_period} ---
+        t.kin_v2_data = slope_val(
+            getattr(ind, f"ima{self.kin_v2_period}"), slope_denom=SLOPE_DENOM,
+            slope_denom_wide=SLOPE_DENOM_WIDE, shift=sh, pip_size=pip, point=point,
+        )
+        t.base_slope_sig_v2 = self.kinetic_acceleration_sig_v2(
+            t.kin_v2_data.val1, t.kin_v2_data.val2, atr_pips
+        )
+
         # --- peak/trough structure (V1-T29): closed bars, ATR-sized zone ---
         t.peak_trough_sig = self._peak_trough(ind, sh, atr_pips, resolve_pip(pip, point))
 
@@ -546,6 +632,16 @@ def kinetic_acceleration_sig_v1(
     **kwargs: float,
 ) -> SIG:
     return SanSignals.kinetic_acceleration_sig_v1(fast_slope, slow_slope, atr_pips, **kwargs)
+
+
+def kinetic_acceleration_sig_v2(
+    fast_slope: float,
+    slow_slope: float,
+    atr_pips: float,
+    *args: int,
+    **kwargs: float,
+) -> SIG:
+    return SanSignals.kinetic_acceleration_sig_v2(fast_slope, slow_slope, atr_pips, *args, **kwargs)
 
 
 def fuse_sig(a: SIG, b: SIG, weight_a: float = 1.0, weight_b: float = 1.0) -> SIG:

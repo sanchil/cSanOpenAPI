@@ -13,6 +13,7 @@ from .signals import (
     fuse_sig,
     kinetic_acceleration_sig,
     kinetic_acceleration_sig_v1,
+    kinetic_acceleration_sig_v2,
     peak_trough_sig,
 )
 from .stats import (
@@ -31,6 +32,7 @@ __all__ = [
     "fast_slow_sig",
     "kinetic_acceleration_sig",
     "kinetic_acceleration_sig_v1",
+    "kinetic_acceleration_sig_v2",
     "peak_trough_sig",
     "fuse_sig",
     "slope_val",

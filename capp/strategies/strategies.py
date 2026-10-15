@@ -12,6 +12,9 @@ Strategy_6 remains the MQ4-parity baseline.
 
 Strategy_8 (V1-T30, not MQ4) trades market structure from peak_trough_sig:
 peaks + troughs structure → BUY / SELL, flat or conflicting → CLOSE.
+
+Strategy_9 (V1-T32, not MQ4) trades kinetic_acceleration_sig_v2: any CLOSE
+or SIDEWAYS closes (no PnL gate — quick exit), BUY / SELL enter.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ class CStrategies:
         decel_profit_close_threshold: float = 2.0,
     ) -> None:
         self.signals = signals or SanSignals()
-        self.active = int(active)  # Strategy_1 .. Strategy_8
+        self.active = int(active)  # Strategy_1 .. Strategy_9
         self.profit_close_threshold = float(profit_close_threshold)
         # Strategy_6: HSIG::initSIG uses getTotalTradeProfits(1002) >= 2.0
         self.mq4_profit_close_threshold = float(mq4_profit_close_threshold)
@@ -90,6 +93,7 @@ class CStrategies:
             6: self.strategy_6,
             7: self.strategy_7,
             8: self.strategy_8,
+            9: self.strategy_9,
         }
         fn = dispatch.get(int(n), self.strategy_1)
         if n == 1:
@@ -304,11 +308,7 @@ class CStrategies:
         is unused (no PnL gate) and kept for the shared dispatch signature.
         """
         _ = total_trade_profits
-        s7 = self.strategy_7(t_sig, total_trade_profits)  # warm Strategy_7 for logging
         pt = t_sig.peak_trough_sig
-        
-        print(f" Strategy_7: {s7} Peak/Trough: {pt} ")
-
         if pt == SIG.SIDEWAYS:
             return SIG.CLOSE
         if pt in (SIG.BUY, SIG.SELL):
@@ -316,6 +316,29 @@ class CStrategies:
         return SIG.NOSIG
 
     Strategy_8 = strategy_8
+
+    def strategy_9(self, t_sig: T_SIG, total_trade_profits: float = 0.0) -> SIG:
+        """
+        Kinetic v2 strategy on base_slope_sig_v2 (V1-T32, TASKS.txt TASK 9).
+
+          - v2 SIDEWAYS (dead) or CLOSE (stalled / decelerating) → CLOSE
+          - v2 BUY / SELL (tail accelerating past history)      → that side
+          - otherwise (dead band, steady trend, NOSIG)           → NOSIG (hold)
+
+        Stateless, no PnL gate: Strategy_7's "hold losers on deceleration"
+        gate made v1 slow to exit; v2's stall dead band already absorbs the
+        noise the gate was hiding. ``total_trade_profits`` is unused and kept
+        for the shared dispatch signature.
+        """
+        _ = total_trade_profits
+        v2 = t_sig.base_slope_sig_v2
+        if v2 in (SIG.SIDEWAYS, SIG.CLOSE):
+            return SIG.CLOSE
+        if v2 in (SIG.BUY, SIG.SELL):
+            return v2
+        return SIG.NOSIG
+
+    Strategy_9 = strategy_9
 
     def reset_state(self, symbol_id: Optional[int] = None) -> None:
         """Clear Strategy_6 sticky state and the v1 flat regime (Strategy_7)

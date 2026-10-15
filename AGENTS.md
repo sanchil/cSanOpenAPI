@@ -77,7 +77,7 @@ IndData (OHLCV, oldest→newest deques)
 
 Implemented in `capp.ctraderapp.CTraderApp.run_signal_cycle()`.
 
-- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated; Strategy_7 / Strategy_8 are stateless)
+- History seed: `execute=False` (no PnL fetch, no orders; Strategy_6 sticky state is still updated; Strategy_7 / Strategy_8 / Strategy_9 are stateless)
 - Live bars after `_hist_ready`: `execute=True`
 - `dry_run`: PnL fetch returns `[]` (avg 0), orders simulated, startup reconcile skipped
 - **Rule:** indicators + signals once per bar; rest of cycle only reads `IndData` / `T_SIG` / `last_trade_sig` / `last_total_trade_profits`
@@ -135,6 +135,7 @@ Legacy `design.txt` tasks:
 | V1-T30 | Done | Strategy_8 on `peak_trough_sig` (SIDEWAYS → CLOSE, BUY/SELL → side, else hold) — **live default** |
 | V1-T31 | Done | `peak_trough_sig` rework: peaks + troughs equal weight (score), zone-break override, default `pt_mode="structure"` |
 | V1-T27 | Done | v1 `mode="acc"` (ATR-normalized acceleration, entry margin) + real flat-regime hysteresis |
+| V1-T32 | Done | `kinetic_acceleration_sig_v2` (tail vs. history, `kin_v2_period=120`) + Strategy_9 (any CLOSE/SIDEWAYS → CLOSE, no PnL gate); selectable, not live |
 
 ---
 
@@ -146,6 +147,7 @@ Legacy `design.txt` tasks:
 - `base_slope_sig = kinetic_acceleration_sig(val1, val2, 0.015, -0.06)`; `slope30_sig = …(0.015, -0.2)`
 - `base_slope_sig_v1` / `slope30_sig_v1` = `kinetic_acceleration_sig_v1(val1, val2, atr_pips, prev_flat=…)` via `SanSignals._kin_v1`. Flat regime with hysteresis (`|slow|/atr_pips` < 0.01 → flat, ≥ 0.02 → trending, between → previous regime, stored per symbol and series) → SIDEWAYS when flat. Trending, `kin_v1_mode="acc"` (default): `acc = sign(s)·(f-s)/atr_pips`; `f·s>0 and acc ≥ 0.002` → BUY/SELL, `f·s≤0 or acc < -0.010` (slope30 -0.015) → CLOSE, else NOSIG. `kin_v1_mode="ratio"` keeps the V1-T26 `f/s-1` gates (0 / -0.20 / -0.30) for comparison
 - `peak_trough_sig` = `SanSignals.peak_trough_sig(high, low, zone=0.5·atr_pips, close=close[shift])` on the last 240 closed bars, `find_extrema(order=5)` on raw prices. Each side's last two extrema → +1 / 0 (within zone) / -1; a close beyond the last peak (trough) zone forces peaks +1 (troughs -1). `pt_mode="structure"` (default, V1-T31): score = peaks + troughs, > 0 → BUY, < 0 → SELL, 0 → SIDEWAYS, too few extrema → NOSIG. `pt_mode="peaks"`: peaks only. Stateless; not MQ4; read by Strategy_8 (V1-T29/T30/T31)
+- `base_slope_sig_v2` = `kinetic_acceleration_sig_v2(f, s, atr_pips)` on `slope_val(ima{kin_v2_period}, 5, 21)` (default ima120). `old = (21·s − 5·f)/16`; in ATR/bar: `|f| < 0.01` → SIDEWAYS if `|o| < 0.02` else CLOSE; `|f| < 0.02` → NOSIG (dead band); `sign(f)·(f−o) ≥ 0.01` → BUY/SELL by sign(f); `≤ −0.03` → CLOSE; else NOSIG. Stateless; not MQ4; read by Strategy_9 (V1-T32)
 - `fsigN = fast_slow_sig(close[1], imaN[1])`; `fast_sig = fuse(fuse(fsig5, fsig14), fsig30)` (CLOSE if NOSIG)
 - `micro_wave_sig` is an interim proxy (true MQ4 `microWaveSIG` not ported)
 

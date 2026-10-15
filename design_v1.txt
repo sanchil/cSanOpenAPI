@@ -336,6 +336,16 @@ Out of scope (unless a task explicitly reopens them):
         kin_v1_mode="ratio" (V1-T26 baseline): ratio=f/s-1 >= 0 → BUY/SELL;
           < close_limit → CLOSE; else NOSIG.  Gates use 1e-9 tolerance.
         SanSignals(kin_v1_mode=…); CStrategies.reset_state also clears regime.
+    base_slope_sig_v2 = kinetic_acceleration_sig_v2(kin_v2_data.val1,
+        kin_v2_data.val2, atr_pips)   (V1-T32; not MQ4; stateless; Strategy_9)
+        kin_v2_data = slope_val(ima{kin_v2_period}, 5, 21), period default 120
+        (SanSignals(kin_v2_period=…), one of 5/14/30/60/120/240/500).
+        old = (21·s - 5·f)/16 (slope of bars 5..21, tail removed);
+        f, o = f/atr_pips, old/atr_pips.  NaN / atr<=0 → NOSIG.
+          |f| < 0.01 → SIDEWAYS if |o| < 0.02 else CLOSE (stalled after move)
+          |f| < 0.02 → NOSIG (dead band, no new entry)
+          accel = sign(f)·(f - o) >= +0.01 → BUY/SELL by sign(f)
+          accel <= -0.03 → CLOSE (decel); else NOSIG (steady trend, hold)
     peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips,
         close=close[shift])  (V1-T29, reworked V1-T31; not MQ4; stateless;
         read by Strategy_8)
@@ -415,6 +425,12 @@ Out of scope (unless a task explicitly reopens them):
                 pt BUY / SELL (peaks + troughs score)      → that side
                 otherwise                                  → NOSIG (hold)
               Opposite side closes via the executor; re-entry next bar.
+  Strategy_9  (V1-T32, not MQ4) — kinetic v2 on base_slope_sig_v2,
+              stateless, no PnL gate (quick exit):
+                v2 SIDEWAYS or CLOSE → CLOSE (always)
+                v2 BUY / SELL        → that side
+                otherwise            → NOSIG (hold)
+              Select with CTraderApp(active_strategy=9); not the live default.
 
 1.9 Execution policy (OrderExecutor, TASK 2)
 --------------------------------------------
@@ -541,6 +557,7 @@ Out of scope (unless a task explicitly reopens them):
   V1-T29 DONE        peak_trough_sig on find_extrema (2026-10-15)
   V1-T30 DONE        Strategy_8 on peak_trough_sig, live default (2026-10-15)
   V1-T31 DONE        peak_trough_sig: peaks + troughs equal weight, zone break (2026-10-15)
+  V1-T32 DONE        kinetic_acceleration_sig_v2 + Strategy_9 (2026-10-15)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1388,6 +1405,35 @@ mixed highs/lows bases → correct BUY. Same synthetic walk as V1-T30
 (synthetic only, NOT evidence of edge): peaks 58 trades, worst -3.7 pips,
 net -6.4; structure 65 trades, worst -2.3, net +5.2.
 
+TASK V1-T32:  [DONE 2026-10-15]  kinetic_acceleration_sig_v2 + Strategy_9 (TASKS.txt TASK 9)
+
+Request: v1 is conservative and misses entries; review the proposed v2
+(tail slope vs. history before the tail) without complicating the premise.
+Evaluation:
+  - Sound: old = (21·s - 5·f)/16 is exactly the slope of bars 5..21, so
+    f - old = 21/16·(f - s) removes the 5/21 window overlap noted in TASK 4.
+    Direction from the tail (sign f) and the dead vs. stalled split are good.
+  - Flaw (chatter): one |f| < 0.02 gate flips CLOSE/BUY while |f| hovers at
+    it — 14-19% of trades lasted <= 5 bars on the synthetic walk. Fixed
+    with a stall dead band (|f| < 0.01 closes, 0.01..0.02 holds): ~2%.
+  - Main finding: entry lag is set by the MA, not by the gates. On ima240
+    v1 and proposed v2 had the same median entry lag (~130 bars after a
+    regime start; SMMA240 ≈ EMA479). v2's gain there is exits: worst trade
+    -6 pips vs -23 for v1+Strategy_7 (whose PnL gate holds losers).
+    Hence kin_v2_period (default 120): one parameter, same premise.
+Delivered: SanSignals.kinetic_acceleration_sig_v2 (+ module function and
+kineticAccelerationSIG_v2 alias), SanSignals(kin_v2_period=120), T_SIG
+base_slope_sig_v2 / kin_v2_data, CStrategies.strategy_9. Live default
+unchanged (Strategy_8).
+Synthetic walk (10 seeds × 12k M1 bars, regime drifts, no spread — NOT
+evidence of edge), trend strength ×1:
+    v1+S7 [240]    482 trades  net 4406p  worst -22.9  lag 132b  whip 0.0%
+    v2    [240]    277 trades  net 4182p  worst  -7.2  lag 133b  whip 0.4%
+    v2    [120]    887 trades  net 4880p  worst  -7.9  lag  87b  whip 2.1%
+    v2    [60]    2204 trades  net 3910p  worst  -5.2  lag  36b  whip 6.6%
+  At ×0.3 trend strength v2 [120] averages ~0.6 pip/trade, so spread will
+  decide it; compare on real bars (V1-T17) before making it live.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1425,6 +1471,7 @@ net -6.4; structure 65 trades, worst -2.3, net +5.2.
   V1-T29   B       DONE        peak_trough_sig (higher/equal/lower peaks)
   V1-T30   B       DONE        Strategy_8 (peak_trough_sig) — live default
   V1-T31   B       DONE        peak_trough_sig structure score + break override
+  V1-T32   B       DONE        kinetic v2 (tail vs. history, ima120) + Strategy_9
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
