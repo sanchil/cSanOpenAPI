@@ -276,7 +276,7 @@ class CStrategies:
         disagreement. A losing trade in a decelerating (not flat) market is
         held until the market goes flat or base v1 turns opposite.
         """
-        base = t_sig.base_slope_sig_v1
+        base = t_sig.base_slope_sig_v2
         if base == SIG.SIDEWAYS:
             return SIG.CLOSE
         if base == SIG.CLOSE:
@@ -309,6 +309,8 @@ class CStrategies:
         """
         _ = total_trade_profits
         pt = t_sig.peak_trough_sig
+        s7 = self.strategy_7(t_sig, total_trade_profits)
+        print(f"Strategy 8: Peak/Trough Signal: {pt}, Strategy 7 Signal: {s7}")        
         if pt == SIG.SIDEWAYS:
             return SIG.CLOSE
         if pt in (SIG.BUY, SIG.SELL):
