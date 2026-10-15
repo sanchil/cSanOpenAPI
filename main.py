@@ -5,6 +5,10 @@ Usage:
     python main.py              # live: sends market orders
     python main.py --dry-run    # signals + simulated orders, nothing sent
     CTRADER_DRY_RUN=1 python main.py   # same, via env / .env
+    python main.py --log-level debug --ml-capture
+                                # trade log level (off|bar|signals|debug, default
+                                # signals; env CTRADER_LOG_LEVEL) → logs/trade_<UTC day>.log;
+                                # --ml-capture (env CTRADER_ML_CAPTURE=1) → logs/ml/*.csv
 """
 
 import argparse
@@ -12,6 +16,7 @@ import os
 
 from csys import load_config
 from capp import CTraderApp
+from capp.tradelog import LEVELS, TradeLogConfig
 
 
 def _env_flag(name: str) -> bool:
@@ -25,11 +30,26 @@ if __name__ == "__main__":
         action="store_true",
         help="log signals and simulated orders; send no orders (also: CTRADER_DRY_RUN=1)",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=tuple(LEVELS),
+        default=os.getenv("CTRADER_LOG_LEVEL", "signals"),
+        help="trade log level (off | bar | signals | debug); files in logs/, one per UTC day",
+    )
+    parser.add_argument(
+        "--ml-capture",
+        action="store_true",
+        help="also write per-bar feature rows to logs/ml/features_<day>.csv",
+    )
     args = parser.parse_args()
 
     config = load_config()  # loads .env, so CTRADER_DRY_RUN may come from there
     dry_run = args.dry_run or _env_flag("CTRADER_DRY_RUN")
     print("⚠️  DRY RUN — no orders will be sent" if dry_run else "✅ LIVE — orders will be sent")
 
-    app = CTraderApp(config, active_strategy=8, dry_run=dry_run)  # peak/trough structure (7 = baseSlope v1, 6 = MQ4 parity)
+    trade_log = TradeLogConfig(
+        level=args.log_level,
+        ml_capture=args.ml_capture or _env_flag("CTRADER_ML_CAPTURE"),
+    )
+    app = CTraderApp(config, active_strategy=8, dry_run=dry_run, trade_log=trade_log)  # peak/trough structure (7 = baseSlope v1, 6 = MQ4 parity)
     app.run()

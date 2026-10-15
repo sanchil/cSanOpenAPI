@@ -7,6 +7,7 @@ for connectivity, types, market data, and indicators.
   capp.signals      — SanSignals builders (types from csys.ctypes)
   capp.strategies   — Strategy_1..6 (6 = MQ4 live composite, default)
   capp.ctraderapp    — CTraderApp orchestration
+  capp.tradelog     — TradeLogAgent (daily trade logs, shadow books, ML CSV)
 """
 
 from csys.ctypes import DTYPE, T_SIG

@@ -64,7 +64,6 @@ class CStrategies:
 
         Call once per bar after ``compute_indicators(ind)``.
         """
-        print(f" Total Trade Profits: {total_trade_profits} Active Strategy: {strategy} ")
         t_sig = self.signals.init_sig(ind, shift=shift)
         self.last_t_sig = t_sig
         n = self.active if strategy is None else int(strategy)
@@ -309,8 +308,6 @@ class CStrategies:
         """
         _ = total_trade_profits
         pt = t_sig.peak_trough_sig
-        s7 = self.strategy_7(t_sig, total_trade_profits)
-        print(f"Strategy 8: Peak/Trough Signal: {pt}, Strategy 7 Signal: {s7}")
         if pt == SIG.SIDEWAYS:
             return SIG.CLOSE
         if pt in (SIG.BUY, SIG.SELL):

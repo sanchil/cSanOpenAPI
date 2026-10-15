@@ -42,6 +42,7 @@ capp/
   strategies/          # CStrategies Strategy_1..8 (6 = MQ4 parity, 8 = live)
   utils.py             # SanUtils + PositionPnL (pure PnL average)
   physics/             # NumPy math + series metrics (V1-T24, extrema V1-T28)
+  tradelog/            # TradeLogAgent: daily trade logs, signal comparison, shadow books, ML CSV (V1-T35)
 main.py                # primary entry (active_strategy=8, --dry-run)
 main_twisted.py        # optional OHLCV HTTP (Twisted)
 main_fastapi.py        # incomplete experiment — do not use
@@ -130,6 +131,9 @@ Legacy `design.txt` tasks:
 | V1-T24 | Done | `capp/physics` covariance-matrix determinant |
 | V1-T25 | Done | MQ4 parity: SMMA indicators (21), slopes 5/21, 2000-bar seed, Strategy_6, `--dry-run` |
 | V1-T26 | Done | `kinetic_acceleration_sig_v1` + Strategy_7 (intentional MQ4 deviation; live default until V1-T30) |
+| V1-T37 | Done | `tools/signal_eval.py` offline evaluation of signals / strategies over ML feature CSVs (TASK 13 critique review) |
+| V1-T36 | Done | Trade journal (`capp/tradelog/journal.py`): real fills via `csys` `parse_deal_fill`, slippage vs. decision quote, spread, commission / swap / net, MFE / MAE, bars held, exit reason; `logs/trades_<day>.csv`; shadow books gain MFE / MAE |
+| V1-T35 | Done | `capp/tradelog` TradeLogAgent (levels, file per UTC day, signal/strategy comparison, shadow paper books, period summaries) + MLRecorder CSV; `--log-level`, `--ml-capture` |
 | V1-T34 | Done | `slope_distribution_sig` → `T_SIG.slope_dist_sig` / `slope_dist_data` (skew + median side, two-sided tail veto); no strategy |
 | V1-T33 | Done | `capp/physics/metrics.py` MarketMetrics port (pure functions, not wired; supersedes V1-T11) |
 | V1-T28 | Done | `capp/physics` local extrema: `find_extrema` (NumPy) / `find_extrema_scipy` (find_peaks) |
@@ -199,6 +203,8 @@ cd claudeApp_v1
 pip install -r _requirements.txt
 python main.py --dry-run          # signals + simulated orders (or CTRADER_DRY_RUN=1)
 python main.py                    # LIVE: sends real orders
+python tools/signal_eval.py logs/ml/features_*.csv --by-symbol   # offline signal scoring: forward returns (ATR), hit rate, edge, MFE/MAE, NOTRADE gate, kinetic v2 flips
+python main.py --log-level debug --ml-capture   # trade log level off|bar|signals|debug (default signals) → logs/trade_<UTC day>.log; ML rows → logs/ml/
 python main_twisted.py            # optional: http://localhost:8080/ohlcv?symbol_id=1&period=M1&weeks=2
 ```
 

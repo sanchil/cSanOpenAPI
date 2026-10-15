@@ -9,11 +9,15 @@ Policy (single trade at a time — no pyramid, no SL/TP):
   * Never attach stop-loss or take-profit
 
 Cues from PhyBot.cs / mq4 placeOrder, simplified to max 1 position per symbol.
+
+``parse_deal_fill`` (V1-T36) turns a ProtoOAExecutionEvent's deal into a
+plain DealFill (fill price, commission, close P&L detail) for the trade log.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from twisted.internet import defer
@@ -34,6 +38,10 @@ _STATUS_CLOSED = 2
 # ProtoOAExecutionType
 _EXEC_FILLED = 3
 _EXEC_PARTIAL = 11
+
+# ProtoOADealStatus
+_DEAL_FILLED = 2
+_DEAL_PARTIAL = 3
 
 
 @dataclass
@@ -63,6 +71,86 @@ class ExecutionResult:
     detail: str = ""
     position: Optional[OpenPosition] = None
     deferred: Any = field(default=None, repr=False)
+
+
+@dataclass
+class DealFill:
+    """One broker fill (ProtoOADeal) in real units.
+
+    Money fields are in deposit currency (scaled by moneyDigits); for an
+    opening fill the close-detail fields are NaN. ``side`` is the deal's own
+    side (a close of a BUY position is a SELL deal).
+    """
+
+    deal_id: int
+    position_id: int
+    order_id: int
+    symbol_id: int
+    side: SIG
+    volume: float                 # filled units (protocol volume / 100)
+    price: float                  # executionPrice
+    time: Optional[datetime]      # executionTimestamp (UTC, naive)
+    commission: float             # this deal's commission (negative = cost)
+    is_close: bool
+    entry_price: float = float("nan")    # closePositionDetail.entryPrice
+    gross_profit: float = float("nan")
+    swap: float = float("nan")
+    close_commission: float = float("nan")
+    balance: float = float("nan")
+    label: str = ""
+
+
+def _money(value: Any, digits: Any) -> float:
+    d = int(digits or 0)
+    return float(value or 0) / (10.0 ** d) if d > 0 else float(value or 0)
+
+
+def _has(msg: Any, name: str) -> bool:
+    try:
+        return bool(msg.HasField(name))
+    except (AttributeError, ValueError):
+        return getattr(msg, name, None) is not None
+
+
+def parse_deal_fill(message: Any) -> Optional[DealFill]:
+    """DealFill from a ProtoOAExecutionEvent, or None when it carries no
+    filled deal (accepted / rejected / cancelled orders, other events)."""
+    if getattr(message, "executionType", None) not in (_EXEC_FILLED, _EXEC_PARTIAL):
+        return None
+    if not _has(message, "deal"):
+        return None
+    deal = message.deal
+    if getattr(deal, "dealStatus", 0) not in (_DEAL_FILLED, _DEAL_PARTIAL):
+        return None
+    side_raw = getattr(deal, "tradeSide", 0)
+    side = SIG.BUY if side_raw == _SIDE_BUY else SIG.SELL if side_raw == _SIDE_SELL else SIG.NOSIG
+    digits = getattr(deal, "moneyDigits", 0)
+    ts = int(getattr(deal, "executionTimestamp", 0) or 0)
+    label = ""
+    if _has(message, "position"):
+        label = getattr(getattr(message.position, "tradeData", None), "label", "") or ""
+    fill = DealFill(
+        deal_id=int(getattr(deal, "dealId", 0) or 0),
+        position_id=int(getattr(deal, "positionId", 0) or 0),
+        order_id=int(getattr(deal, "orderId", 0) or 0),
+        symbol_id=int(getattr(deal, "symbolId", 0) or 0),
+        side=side,
+        volume=int(getattr(deal, "filledVolume", 0) or getattr(deal, "volume", 0) or 0) / 100.0,
+        price=float(getattr(deal, "executionPrice", 0.0) or 0.0),
+        time=datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).replace(tzinfo=None) if ts else None,
+        commission=_money(getattr(deal, "commission", 0), digits),
+        is_close=_has(deal, "closePositionDetail"),
+        label=label,
+    )
+    if fill.is_close:
+        cpd = deal.closePositionDetail
+        cd = getattr(cpd, "moneyDigits", 0) or digits
+        fill.entry_price = float(getattr(cpd, "entryPrice", 0.0) or 0.0)
+        fill.gross_profit = _money(getattr(cpd, "grossProfit", 0), cd)
+        fill.swap = _money(getattr(cpd, "swap", 0), cd)
+        fill.close_commission = _money(getattr(cpd, "commission", 0), cd)
+        fill.balance = _money(getattr(cpd, "balance", 0), cd)
+    return fill
 
 
 class OrderExecutor:

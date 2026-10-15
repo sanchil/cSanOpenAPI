@@ -23,9 +23,11 @@ from .ctypes import (
     relative_to_price,
     symbol_meta_from_proto,
 )
-from .execution import ExecutionResult, OpenPosition, OrderExecutor
+from .execution import DealFill, ExecutionResult, OpenPosition, OrderExecutor, parse_deal_fill
 
 __all__ = [
+    "DealFill",
+    "parse_deal_fill",
     "CTraderOpenAPI",
     "is_spot_event",
     "scale_money",

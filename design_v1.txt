@@ -181,6 +181,8 @@ Out of scope (unless a task explicitly reopens them):
     physics/{math,metrics}.py # NumPy cov-matrix determinant (V1-T24);
                               # find_extrema / find_extrema_scipy (V1-T28);
                               # MarketMetrics atomic truths (V1-T33)
+    tradelog/{agent,ml}.py # TradeLogAgent + MLRecorder (V1-T35)
+  tools/signal_eval.py    # offline signal scoring over features CSVs (V1-T37)
   main.py                 # PRIMARY entry: active_strategy=8, --dry-run flag
   main_twisted.py         # optional OHLCV HTTP helper (port 8080)
   main_fastapi.py         # incomplete experiment — do not use
@@ -492,6 +494,61 @@ Out of scope (unless a task explicitly reopens them):
   fans out to per-caller Deferreds). Failures degrade to avg=0 and still run
   strategy/execution.
 
+1.12 Trade log agent (capp/tradelog, V1-T35)
+--------------------------------------------
+
+  CTraderApp(trade_log=TradeLogConfig(...)) builds self.trade_log =
+  TradeLogAgent; main.py: --log-level off|bar|signals|debug (env
+  CTRADER_LOG_LEVEL, default signals), --ml-capture (env CTRADER_ML_CAPTURE=1).
+  Fed from _log_cycle_result (live new bar only; never during the history
+  seed) and OrderExecutor.on_action. Agent disabled → legacy console print.
+  Files: logs/trade_<period>.log, new file per period (rotation "day" =
+  UTC 00:00-24:00 default, "hour", "week", or N seconds); console echo opt.
+  Levels (cumulative):
+    bar      New bar closed: <close time UTC> [SYM] O H L C V ATR ADX avgPnL
+             SIG (values of the closed bar [-2]); EXEC open/close/skipped/
+             error lines; period summaries
+    signals  + "Total Trade Profits: x Active Strategy: n";
+             "Signals [SYM] Strategy_8 (active): BUY | Strategy_7: … |
+             Peak/Trough: … | Slope Distribution: … | Kinetic v2: …";
+             Shadow open/close events
+    debug    + every T_SIG SIG field and DTYPE data field
+  Compared sources: TradeLogConfig.compare_strategies (default 7, 8, 9; run
+  on the same T_SIG via CStrategies.run_strategy, the active one is never
+  re-run) and compare_signals (T_SIG field names; default peak_trough_sig,
+  slope_dist_sig, base_slope_sig_v2).
+  Shadow book: paper position per (symbol, source) under the executor policy
+  (CLOSE / SIDEWAYS / opposite close, no reversal same bar, NOSIG / HOLD /
+  NOTRADE hold), filled at the closed bar's close, pips, no costs. Summary
+  per period at rollover and on reactor shutdown (trades, win %, net, best,
+  worst, avg bars, open paper P&L).
+  MLRecorder (opt-in): logs/ml/features_<period>.csv, one row per bar and
+  symbol: OHLCV, indicators, every T_SIG signal / data value, compared
+  outputs, avgPnL, position. Labels (forward returns) are computed offline
+  by tools/signal_eval.py (V1-T37).
+  Trade journal (V1-T36, capp/tradelog/journal.py, TradeLogConfig
+  .trade_journal=True): real positions.
+    on_decision (CTraderApp, before handle_signal): advance open trades'
+      MFE / MAE with the closed bar's high / low (bars held += 1), then record
+      the policy intent (open / close), reason, and reference quote — ask
+      for buy deals, bid for sell deals (CTraderApp.quotes from spot events),
+      else the bar close ("bar").
+    on_fill (on_message → csys parse_deal_fill → DealFill): opening fill →
+      slippage vs. reference (pips, + = worse), spread at decision, deal
+      commission; closing fill → exit slippage / spread, gross + swap from
+      closePositionDetail, commission = open + close deal commissions, net,
+      realized pips. Closes not requested by the app → "external"; positions
+      from before the run → entry "unknown".
+    Exit reason: "opposite SELL", or "CLOSE (<driver>=<value>: flat market |
+      deceleration / stall)" with the active strategy's driving T_SIG field
+      (journal.STRATEGY_DRIVERS: 7 base_slope_sig_v1, 8 peak_trough_sig,
+      9 base_slope_sig_v2, 6 base_slope_sig, …).
+    Dry run: fills at the reference quote (slippage 0, money n/a).
+    Output: FILL / TRADE lines (level bar), <log_dir>/trades_<period>.csv
+    (one row per closed trade), "Real trades" line in each period summary.
+  Shadow books also track MFE / MAE (avg per source in the summary).
+  Period summaries are pinned to the closing period's file.
+
 1.11 Open API client surface used by the app
 --------------------------------------------
 
@@ -572,6 +629,9 @@ Out of scope (unless a task explicitly reopens them):
   V1-T32 DONE        kinetic_acceleration_sig_v2 + Strategy_9 (2026-10-15)
   V1-T33 DONE        MarketMetrics port into capp/physics/metrics.py (2026-10-15)
   V1-T34 DONE        slope_distribution_sig in T_SIG (no strategy) (2026-10-15)
+  V1-T35 DONE        capp/tradelog TradeLogAgent + MLRecorder (2026-10-15)
+  V1-T36 DONE        Trade journal: fills, slippage, costs, MFE/MAE (2026-10-15)
+  V1-T37 DONE        tools/signal_eval.py offline signal evaluation (2026-10-15)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1540,6 +1600,88 @@ Results at the defaults (BUY / SELL / NOSIG / NOTRADE %):
     single news spike         2.9 /  2.3 / 94.3 /  0.5
     whipsaw (big bars ±)      2.2 /  1.9 / 19.6 / 76.2
 
+TASK V1-T35:  [DONE 2026-10-15]  Trade log agent (TASKS.txt TASK 12)
+
+Request: switchable, levelled logging agent in capp, new file per day (or a
+configured period), comparing several signals / strategies, extensible to
+ML data capture; capture the Total Trade Profits, signal comparison and
+New bar closed (with close date-time) lines.
+Delivered: capp/tradelog (TradeLogAgent, TradeLogConfig, PeriodFileHandler,
+ShadowBook, MLRecorder) — see section 1.12. CTraderApp(trade_log=…),
+executor.on_action hook, reactor shutdown flush; main.py --log-level /
+--ml-capture. The ad-hoc prints in CStrategies.evaluate ("Total Trade
+Profits") and strategy_8 (signal comparison, which also re-ran Strategy_7)
+were removed; the agent now writes both lines. The legacy console "New bar
+closed" print (agent off) gained the close time.
+Behaviour notes: the bar line now reports ATR / ADX of the closed bar
+([-2]); the old print used [-1] (the bar that just opened). EXEC lines can
+precede their bar line (orders execute before logging).
+Verified offline (not connected; dry-run executor, fake clock): 300 bars
+across a UTC midnight → trade_2026-10-15.log / trade_2026-10-16.log and two
+CSVs (78 columns); summary written into the closing day's file; EXEC lines
+named; level off / enabled=False create no files; period_start for day /
+hour / week / 900 s; invalid level → ValueError.
+
+TASK V1-T36:  [DONE 2026-10-15]  Trade journal (TASK 12 follow-up, items 1-2)
+
+Request: (1) real fills — fill price and slippage vs. signal price, spread
+at entry / exit, commission and swap, realized P&L from broker close
+events; (2) per trade — MFE / MAE, bars held, exit reason.
+Delivered: csys DealFill + parse_deal_fill (ProtoOADeal → real units,
+moneyDigits scaled); CTraderApp.quotes (bid/ask cache, _update_quote),
+on_message → trade_log.on_fill, trade_log.on_decision before
+handle_signal; capp/tradelog/journal.py TradeJournal / TradeRecord;
+ShadowBook MFE / MAE; summaries pinned to the closing file (also fixes
+summaries landing in the new day's file when an EXEC line came first).
+Assumptions: slippage reference = quote at decision time (bar close if no
+quote yet); commission = sum of deal commissions (closePositionDetail
+.commission not added, to avoid double counting the close leg) — confirm
+against broker statements on the first live day. MFE / MAE use M1 bar
+high / low (intrabar ticks not tracked).
+Verified offline with real ProtoOAExecutionEvent messages: entry slip
++0.3p, exit slip +0.2p, MFE +13p / MAE -8p over 3 bars, net = 10.13 -
+0.12 - 0.70 = 9.31, exit reason "CLOSE (peak_trough_sig=SIDEWAYS: flat
+market)", external close of a pre-run position, non-fill events ignored;
+dry-run journal across a UTC midnight writes trades_<day>.csv per day.
+
+TASK V1-T37:  [DONE 2026-10-15]  Offline signal evaluation (TASKS.txt TASK 13)
+
+TASK 13 review of an external critique of kinetic v2 / peak_trough /
+slope_dist (no live-code changes):
+  - kinetic v2: algebra and stall band confirmed. Shallow-dip flip risk
+    (strong history, small opposite tail → SELL) is real in principle; on
+    SMMA120 a 5-bar flip is rare on shallow dips — measure before guarding
+    (flip section below).
+  - peak_trough: zone is already 0.5·ATR; confirmation delay is known
+    (break override covers breaks only); extremum age is capped by the
+    240-bar lookback, and an old-peak break after a range is often a strong
+    breakout, so age is a measurement question, not a fix.
+  - slope_dist: the overlap critique does not apply — 1-bar close slopes,
+    non-overlapping. Median floor (|median| in ATR/bar) and NOTRADE as an
+    entry gate are open options; per-bar kelly / tails / median already sit
+    in the debug log and ML CSV.
+  - Evaluation by forward returns per bar instead of closed trades: adopted.
+Delivered: tools/signal_eval.py (standalone; csv + NumPy; no capp imports).
+  python tools/signal_eval.py logs/ml/features_*.csv [--horizons 5 15 30]
+      [--early 5] [--adverse 0.5] [--signals …] [--gate slope_dist_sig]
+      [--by-symbol] [--out report.csv]
+  Labels: fwd_h = (close[i+h] - close[i]) / atr[i]; NaN across time gaps;
+  early MFE / MAE from high / low of rows i+1..i+N. Views: bar (every
+  BUY/SELL bar) and onset (first bar of each BUY/SELL run — honest n).
+  Metrics: n, mean signed fwd, hit rate, edge = mean d·(fwd - drift),
+  t-stat (onsets), MFE / MAE, wrong-early = P(MAE <= -adverse ATR).
+  Sections: signals (defaults: base_slope_sig_v2, peak_trough_sig,
+  slope_dist_sig, out_Strategy_*, trade_sig), gate (onsets split by
+  slope_dist_sig == NOTRADE), kinetic v2 flips (sign(f) != sign(old), old =
+  (21·s - 5·f)/16, bucketed by |f|/|old|). Warns below 30 onsets.
+Needs data from `python main.py --ml-capture` (live bars only). Replaying
+history to generate features offline is a follow-up (V1-T17).
+Verified: known-answer CSV (oracle hit@5 100%, inverse 0%, random ~50% / t
+~0, run-pattern onset count exact incl. restart after a gap; labels NaN
+across the gap; UTC parsing); app-generated features CSVs (dry-run
+harness) parse with all default columns, gate and flip sections; printed
+rows == --out rows.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1581,6 +1723,11 @@ Results at the defaults (BUY / SELL / NOSIG / NOTRADE %):
   V1-T32   B       DONE        kinetic v2 (tail vs. history, ima120) + Strategy_9
   V1-T33   B       DONE        MarketMetrics port (capp.physics.metrics)
   V1-T34   B       DONE        slope_distribution_sig (T_SIG only, no strategy)
+  V1-T35   E       DONE        Trade log agent (daily files, levels, shadow
+                               books, ML CSV) — partly covers V1-T05 / V1-T22
+  V1-T36   E       DONE        Trade journal (real fills, slippage, spread,
+                               costs, MFE / MAE, bars, exit reason)
+  V1-T37   E       DONE        Offline signal evaluation (tools/signal_eval.py)
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 

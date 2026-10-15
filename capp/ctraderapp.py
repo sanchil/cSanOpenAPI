@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Union
 import time
 
@@ -7,6 +7,7 @@ from twisted.internet import defer
 # System layer
 from csys.ctrader_api import CTraderOpenAPI, OrderExecutor
 from csys.ctrader_api.client import is_spot_event, scale_money
+from csys.ctrader_api.execution import parse_deal_fill
 from csys.ctypes import (
     DEFAULT_HISTORY_BARS,
     IndData,
@@ -24,6 +25,7 @@ from csys.cindicators.snapshot import compute_indicators
 # Application layer
 from capp.signals import SanSignals
 from capp.strategies import CStrategies
+from capp.tradelog import TradeLogAgent, TradeLogConfig
 from capp.utils import PositionPnL, SanUtils
 
 
@@ -58,6 +60,7 @@ class CTraderApp:
         trade_label: str = "cSanOpenAPI",
         trading_enabled: bool = True,
         dry_run: bool = False,
+        trade_log: Optional[TradeLogConfig] = None,
     ):
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
@@ -72,6 +75,8 @@ class CTraderApp:
         # Convenience map: symbol_id → digits (always available after meta load)
         self.symbol_digits: Dict[int, int] = {}
         self.current_bar: Dict[int, dict] = {}
+        # Latest (bid, ask) per symbol from spot events (trade log slippage / spread)
+        self.quotes: Dict[int, tuple] = {}
         self.bar_interval = 60  # seconds between synthetic bars (M1)
         self.bar_period = "M1"
         # Long window so SMMA ima240/ima500 converge (MQ4 MAs see full history)
@@ -105,6 +110,12 @@ class CTraderApp:
         )
         # TASK 7/10: pure PnL average; cTrader filter = label
         self.utils = SanUtils(default_label=trade_label)
+
+        # V1-T35: per-bar trade log (file per day, signal comparison, paper books)
+        self.trade_log = TradeLogAgent(trade_log)
+        if self.trade_log.enabled:
+            self.executor.on_action = self.trade_log.log_execution
+            self.trade_log.name_of = lambda sid: self.symbol_map.get(sid, f"ID_{sid}")
 
         self.on_bar_handlers = []
 
@@ -358,6 +369,10 @@ class CTraderApp:
         # Execution events (fills / closes) — update order book
         if hasattr(message, "executionType"):
             self.executor.on_execution_event(message)
+            if self.trade_log.enabled:
+                fill = parse_deal_fill(message)
+                if fill is not None:
+                    self.trade_log.on_fill(fill)
             return
 
         # Spot / price path
@@ -374,6 +389,7 @@ class CTraderApp:
         symbol_id = int(message.symbolId)
         if symbol_id not in self.hist_bars:
             return
+        self._update_quote(symbol_id, message)
 
         # Prefer official live trendbars when present (after subscribe_live_trendbars)
         live_bars = list(getattr(message, "trendbar", []) or [])
@@ -765,6 +781,16 @@ class CTraderApp:
         self._sync_position_state(data, sid, trade_sig)
 
         if execute and self._hist_ready:
+            if self.trade_log.enabled:
+                self.trade_log.on_decision(
+                    data=data,
+                    symbol_id=sid,
+                    trade_sig=trade_sig,
+                    position_side=self.executor.position_side(sid),
+                    quote=self.quotes.get(sid),
+                    t_sig=t_sig,
+                    active=self.strategies.active,
+                )
             self.executor.handle_signal(sid, trade_sig)
             self._sync_position_state(data, sid, trade_sig)
 
@@ -782,10 +808,26 @@ class CTraderApp:
         log_tag: str,
     ) -> None:
         symbol_name = self.symbol_map.get(sid, f"ID_{sid}")
+        if self.trade_log.enabled:
+            self.trade_log.on_cycle(
+                data=data,
+                symbol_id=sid,
+                symbol_name=symbol_name,
+                t_sig=self.last_t_sig.get(sid),
+                trade_sig=trade_sig,
+                active=self.strategies.active,
+                avg_pnl=avg_pnl,
+                strategies=self.strategies,
+                position_side=self.executor.position_side(sid)
+                if self.executor.has_position(sid) else None,
+                tag=log_tag,
+            )
+            return
         tag = f" ({log_tag})" if log_tag else ""
         if len(data.close) >= 2:
+            closed = data.time[-2] + timedelta(seconds=int(data.period or self.bar_interval))
             print(
-                f"New bar closed [{symbol_name}] "
+                f"New bar closed: {closed:%Y-%m-%d %H:%M:%S} [{symbol_name}] "
                 f"O={data.open[-2]:.5f} H={data.high[-2]:.5f} "
                 f"L={data.low[-2]:.5f} C={data.close[-2]:.5f} "
                 f"V={data.tick_volume[-2]:.0f} "
@@ -798,6 +840,19 @@ class CTraderApp:
                 f"Signal [{symbol_name}] avgPnL={avg_pnl:.2f} "
                 f"SIG={trade_sig}{tag}"
             )
+
+    def _update_quote(self, symbol_id: int, message) -> None:
+        """Cache bid/ask; a spot event may carry only the side that changed."""
+        bid, ask = self.quotes.get(symbol_id, (0.0, 0.0))
+        for name in ("bid", "ask"):
+            try:
+                present = message.HasField(name)
+            except (AttributeError, ValueError):
+                present = bool(getattr(message, name, 0))
+            if present:
+                value = relative_to_price(getattr(message, name))
+                bid, ask = (value, ask) if name == "bid" else (bid, value)
+        self.quotes[symbol_id] = (bid, ask)
 
     def _sync_position_state(
         self,
@@ -828,4 +883,8 @@ class CTraderApp:
         self.on_bar_handlers.append(handler)
 
     def run(self):
+        from twisted.internet import reactor
+
+        # Flush the trade log's period summary on Ctrl-C / reactor stop
+        reactor.addSystemEventTrigger("before", "shutdown", self.trade_log.close)
         self.api.run()
