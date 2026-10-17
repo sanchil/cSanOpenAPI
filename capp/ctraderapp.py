@@ -24,7 +24,7 @@ from csys.cindicators.snapshot import compute_indicators
 
 # Application layer
 from capp.signals import SanSignals
-from capp.strategies import CStrategies
+from capp.strategies import CStrategies, ProfitTrail
 from capp.tradelog import TradeLogAgent, TradeLogConfig
 from capp.utils import PositionPnL, SanUtils
 
@@ -65,6 +65,7 @@ class CTraderApp:
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_message
+        self.api.on_disconnected = self._on_disconnected
 
         # Per-symbol historical data: Dict[symbol_id, IndData]
         self.hist_bars: Dict[int, IndData] = {}
@@ -88,6 +89,10 @@ class CTraderApp:
         self._last_live_bar_minutes: Dict[int, int] = {}
         self._hist_pending = 0
         self._hist_ready = False
+        # V1-T39: symbols with live trendbars flowing (no synthetic fallback),
+        # and symbols reloading history after a bar gap (host sleep / stall)
+        self._live_seen: set = set()
+        self._resyncing: set = set()
 
         # design.txt: signals → strategies (once per cycle)
         self.signals = SanSignals(default_shift=1)
@@ -95,6 +100,9 @@ class CTraderApp:
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
         self.last_total_trade_profits: float = 0.0
+        # V1-T38: ATR trailing profit lock over these strategies' output
+        self.profit_trail = ProfitTrail()
+        self.trail_strategies = {8}
 
         # TASK 11: at most one account PnL fetch in flight (multi-symbol bars join it)
         self._pnl_fetch_inflight: Optional[defer.Deferred] = None
@@ -398,7 +406,12 @@ class CTraderApp:
                 self._apply_live_trendbar(symbol_id, bar)
             return
 
-        # Fallback: synthesize bars from mid price if no live trendbar payload
+        # Fallback: synthesize bars from mid price if no live trendbar payload.
+        # Not once live trendbars have arrived: after a host sleep the first
+        # spot often has no trendbar, and a synthetic bar would commit the
+        # stale pre-sleep minute (V1-T39).
+        if symbol_id in self._live_seen:
+            return
         if not (hasattr(message, "bid") and hasattr(message, "ask")):
             return
         # bid/ask are 1/100000 of a price unit
@@ -423,6 +436,9 @@ class CTraderApp:
         overwritten on the last slot. When the minute rolls, a new bar is appended
         and on_bar handlers fire.
         """
+        self._live_seen.add(symbol_id)
+        if symbol_id in self._resyncing:
+            return  # history reload in flight; it replaces the series
         decoded = decode_trendbar(bar)
         data = self.hist_bars[symbol_id]
         minutes = decoded["utc_minutes"]
@@ -456,6 +472,13 @@ class CTraderApp:
             )
             return
 
+        step = max(int(self.bar_interval) // 60, 1)
+        if minutes > prev + step and self._hist_ready:
+            # Missed bars (host sleep / feed stall): reload instead of appending
+            # across a hole (V1-T39)
+            self._resync_history(symbol_id, minutes - prev - step, decoded)
+            return
+
         if minutes > prev:
             # New bar opened → previous bar is complete
             data.new_bar = True
@@ -467,6 +490,75 @@ class CTraderApp:
             # Live cycle is async (PnL fetch first); logging happens in finish
             self.run_signal_cycle(data, symbol_id, execute=True, log_bar=True)
             self._fire_on_bar_event()
+
+    # ------------------------------------------------- bar gap resync (V1-T39)
+    def _resync_history(self, symbol_id: int, gap_min: int, decoded: dict) -> None:
+        """Reload the trendbar history after a gap, then run one live cycle."""
+        name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
+        self._note(f"⚠️  [{name}] bar gap {gap_min} min (host sleep / feed stall) — reloading history")
+        self._resyncing.add(symbol_id)
+        d = self.api.get_trendbars(
+            symbol_id=symbol_id,
+            period=self.bar_period,
+            count=self.bar_count,
+            client_msg_id=f"resync_{symbol_id}",
+        )
+        d.addCallback(self._on_resync_bars, symbol_id, decoded)
+        d.addErrback(self._on_resync_error, symbol_id, decoded)
+
+    def _on_resync_bars(self, response, symbol_id: int, trigger: dict) -> None:
+        raw_bars = list(getattr(response, "trendbar", []) or [])
+        data = self.hist_bars[symbol_id]
+        digits = self.symbol_digits.get(symbol_id, getattr(data, "digits", None))
+        decoded = sorted(
+            (decode_trendbar(bar, digits=digits) for bar in raw_bars),
+            key=lambda b: b["utc_minutes"],
+        )
+        if not decoded:
+            self._on_resync_error(None, symbol_id, trigger)
+            return
+        last_seen = data.time[-1] if data.time else None
+        data.load_bars(decoded)
+        self._last_live_bar_minutes[symbol_id] = decoded[-1]["utc_minutes"]
+        self._resyncing.discard(symbol_id)
+        # Bars the trail missed while asleep (closed bars only; [-1] is forming)
+        missed = [b for b in decoded[:-1] if last_seen is None or b["time"] > last_seen]
+        self.profit_trail.observe(
+            symbol_id, [b["high"] for b in missed], [b["low"] for b in missed]
+        )
+        name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
+        self._note(f"✅ [{name}] history reloaded ({len(decoded)} bars, {len(missed)} new) — resuming")
+        data.new_bar = True
+        self.run_signal_cycle(data, symbol_id, execute=True, log_bar=True, log_tag="resync")
+        self._fire_on_bar_event()
+
+    def _on_resync_error(self, failure, symbol_id: int, trigger: dict) -> None:
+        """Reload failed: fall back to appending the live bar across the gap."""
+        self._resyncing.discard(symbol_id)
+        why = failure.getErrorMessage() if failure is not None else "no bars returned"
+        name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
+        self._note(f"❌ [{name}] history reload failed: {why} — continuing with the gap")
+        data = self.hist_bars[symbol_id]
+        data.new_bar = True
+        data.prev_bar_open_time = data.time[-1] if data.time else trigger["time"]
+        data.new_bar_open_time = trigger["time"]
+        data.append_decoded_bar(trigger)
+        self._last_live_bar_minutes[symbol_id] = trigger["utc_minutes"]
+        self.run_signal_cycle(data, symbol_id, execute=True, log_bar=True)
+        self._fire_on_bar_event()
+
+    def _on_disconnected(self, reason) -> None:
+        msg = reason.getErrorMessage() if hasattr(reason, "getErrorMessage") else str(reason)
+        if self.trade_log.enabled:
+            self.trade_log.note(f"⚠️  Disconnected: {msg}")
+
+    def _note(self, msg: str) -> None:
+        """Console + trade log (ops events the log must show)."""
+        if self.trade_log.enabled:
+            self.trade_log.note(msg)
+            if self.trade_log.config.console:
+                return  # the trade log already echoes to the console
+        print(msg)
 
     # --------------------------------------------- synthetic bar path (fallback)
     def update_current_bar(self, symbol_id: int, price: float, volume: int, timestamp: float):
@@ -781,6 +873,15 @@ class CTraderApp:
         self._sync_position_state(data, sid, trade_sig)
 
         if execute and self._hist_ready:
+            reason = None
+            if self.strategies.active in self.trail_strategies:
+                trade_sig = self._apply_profit_trail(data, sid, trade_sig)
+                self.last_trade_sig[sid] = trade_sig
+                if self.profit_trail.last_fired.get(sid):
+                    reason = (
+                        f"CLOSE (trail: giveback >= {self.profit_trail.trail_atr:g} ATR "
+                        f"after >= {self.profit_trail.activate_atr:g} ATR profit)"
+                    )
             if self.trade_log.enabled:
                 self.trade_log.on_decision(
                     data=data,
@@ -790,6 +891,7 @@ class CTraderApp:
                     quote=self.quotes.get(sid),
                     t_sig=t_sig,
                     active=self.strategies.active,
+                    reason=reason,
                 )
             self.executor.handle_signal(sid, trade_sig)
             self._sync_position_state(data, sid, trade_sig)
@@ -798,6 +900,26 @@ class CTraderApp:
             self._log_cycle_result(data, sid, trade_sig, total_trade_profits, log_tag)
 
         return trade_sig
+
+    def _apply_profit_trail(self, data: IndData, sid: int, trade_sig: SIG) -> SIG:
+        """V1-T38: ATR trail on the last closed bar ([-2]; [-1] is forming)."""
+        i = -2 if len(data.close) >= 2 else -1
+        try:
+            high, low, close = data.high[i], data.low[i], data.close[i]
+        except IndexError:
+            return trade_sig
+        atr = data.atr[i] if len(data.atr) >= -i else float("nan")
+        pos = self.executor.get_position(sid)
+        return self.profit_trail.apply(
+            sid,
+            trade_sig,
+            self.executor.position_side(sid),
+            entry_price=pos.entry_price if pos is not None else float("nan"),
+            high=high,
+            low=low,
+            close=close,
+            atr=atr,
+        )
 
     def _log_cycle_result(
         self,

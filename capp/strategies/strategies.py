@@ -15,15 +15,29 @@ peaks + troughs structure → BUY / SELL, flat or conflicting → CLOSE.
 
 Strategy_9 (V1-T32, not MQ4) trades kinetic_acceleration_sig_v2: any CLOSE
 or SIDEWAYS closes (no PnL gate — quick exit), BUY / SELL enter.
+
+ProfitTrail (V1-T38, not MQ4; TASKS.txt TASK 15) is a profit lock on top of
+Strategy_8: once the open trade's best excursion reaches
+S8_TRAIL_ACTIVATE_ATR × ATR, a close that gives back S8_TRAIL_ATR × ATR from
+that best high / low turns the bar's signal into CLOSE. Structure exits alone
+give back about one full swing. After a trail exit, same-side entries are
+blocked until the strategy output leaves that side, so a still-BUY structure
+does not re-buy the top. It only ever emits CLOSE (no SL/TP, policy I1–I10
+unchanged).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from csys.ctypes import IndData, SIG, T_SIG
 from capp.signals import SanSignals
+
+# ProfitTrail defaults (not MQ4; V1-T38). Checked on 2026-10-16 USDJPY M1
+# only: A=3 / K=2 turned the 15:46 BUY from +11.8p into about +33.6p.
+S8_TRAIL_ACTIVATE_ATR = 3.0   # best excursion (ATRs) before the trail arms
+S8_TRAIL_ATR = 2.0            # giveback from the best price (ATRs) that closes
 
 
 class CStrategies:
@@ -357,3 +371,115 @@ class _HSigState:
     composite_close: SIG = SIG.NOSIG  # composite_CloseSIG_1
     open_sig: SIG = SIG.NOSIG         # HSIG.openSIG
     close_sig: SIG = SIG.NOSIG        # HSIG.closeSIG
+
+def trail_exit(
+    side: SIG,
+    entry_price: float,
+    best: float,
+    close: float,
+    atr: float,
+    activate_atr: float = S8_TRAIL_ACTIVATE_ATR,
+    trail_atr: float = S8_TRAIL_ATR,
+) -> bool:
+    """True when an armed ATR trail is hit (V1-T38).
+
+    ``best`` is the highest high (BUY) / lowest low (SELL) since entry. The
+    trail arms once best is ``activate_atr`` ATRs in profit and fires when
+    ``close`` is ``trail_atr`` ATRs back from best. NaN inputs → False.
+    """
+    if side not in (SIG.BUY, SIG.SELL) or not (atr > 0.0):
+        return False
+    if not (entry_price == entry_price and best == best and close == close):
+        return False
+    s = 1.0 if side == SIG.BUY else -1.0
+    return s * (best - entry_price) >= activate_atr * atr and s * (best - close) >= trail_atr * atr
+
+
+@dataclass
+class _Trail:
+    side: SIG
+    entry_price: float
+    best: float
+
+
+class ProfitTrail:
+    """Per-symbol ATR trailing profit lock over a strategy's output (V1-T38).
+
+    Feed once per closed bar with the live position side. Returns the signal
+    to execute: the strategy's own, CLOSE when the trail fires, or NOSIG for a
+    same-side re-entry right after a trail exit.
+    """
+
+    def __init__(
+        self,
+        activate_atr: float = S8_TRAIL_ACTIVATE_ATR,
+        trail_atr: float = S8_TRAIL_ATR,
+    ) -> None:
+        self.activate_atr = float(activate_atr)
+        self.trail_atr = float(trail_atr)
+        self._open: Dict[int, _Trail] = {}
+        self._blocked: Dict[int, SIG] = {}
+        self.last_fired: Dict[int, bool] = {}
+
+    def apply(
+        self,
+        symbol_id: int,
+        sig: SIG,
+        position_side: SIG,
+        *,
+        entry_price: float,
+        high: float,
+        low: float,
+        close: float,
+        atr: float,
+    ) -> SIG:
+        """``entry_price`` <= 0 or NaN falls back to ``close`` on the first
+        tracked bar (broker fill price not known yet)."""
+        self.last_fired[symbol_id] = False
+        blocked = self._blocked.get(symbol_id)
+        if blocked is not None:
+            if sig == blocked:
+                sig = SIG.NOSIG
+            else:
+                del self._blocked[symbol_id]
+
+        if position_side not in (SIG.BUY, SIG.SELL):
+            self._open.pop(symbol_id, None)
+            return sig
+
+        tr = self._open.get(symbol_id)
+        if tr is None or tr.side != position_side:
+            entry = entry_price if entry_price == entry_price and entry_price > 0.0 else close
+            tr = _Trail(position_side, entry, high if position_side == SIG.BUY else low)
+            self._open[symbol_id] = tr
+        elif position_side == SIG.BUY:
+            tr.best = max(tr.best, high)
+        else:
+            tr.best = min(tr.best, low)
+
+        if trail_exit(tr.side, tr.entry_price, tr.best, close, atr, self.activate_atr, self.trail_atr):
+            self._open.pop(symbol_id, None)
+            self._blocked[symbol_id] = tr.side
+            self.last_fired[symbol_id] = True
+            return SIG.CLOSE
+        return sig
+
+    def observe(self, symbol_id: int, highs: Sequence[float], lows: Sequence[float]) -> None:
+        """Extend an open trail's best price with bars it did not see (e.g.
+        bars reloaded after a host sleep). No-op when nothing is tracked."""
+        tr = self._open.get(symbol_id)
+        if tr is None:
+            return
+        vals = [v for v in (highs if tr.side == SIG.BUY else lows) if v == v]
+        if vals:
+            tr.best = max(tr.best, max(vals)) if tr.side == SIG.BUY else min(tr.best, min(vals))
+
+    def reset(self, symbol_id: Optional[int] = None) -> None:
+        if symbol_id is None:
+            self._open.clear()
+            self._blocked.clear()
+            self.last_fired.clear()
+        else:
+            self._open.pop(symbol_id, None)
+            self._blocked.pop(symbol_id, None)
+            self.last_fired.pop(symbol_id, None)

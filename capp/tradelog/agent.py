@@ -442,9 +442,11 @@ class TradeLogAgent:
         quote: Optional[Tuple[float, float]],
         t_sig: Optional[T_SIG],
         active: int,
+        reason: Optional[str] = None,
     ) -> None:
         """Call before OrderExecutor.handle_signal: records the order intent
-        and reference quote, and advances open trades' MFE / MAE."""
+        and reference quote, and advances open trades' MFE / MAE. ``reason``
+        overrides the journal's close reason (e.g. the V1-T38 profit trail)."""
         if not self.enabled or self.journal is None:
             return
         self._check_rollover()
@@ -457,8 +459,15 @@ class TradeLogAgent:
             symbol_id=symbol_id, trade_sig=trade_sig, position_side=position_side,
             bar_high=_at(data.high, i), bar_low=_at(data.low, i), bar_close=_at(data.close, i),
             pip=float(getattr(data, "pip_size", 0.0) or 0.0), quote=quote, t_sig=t_sig,
-            active=active, when=when,
+            active=active, when=when, reason=reason,
         )
+
+    def note(self, msg: str, level: int = logging.WARNING) -> None:
+        """Free-form ops line (stalls, disconnects, history reloads)."""
+        if not self.enabled:
+            return
+        self._check_rollover()
+        self.logger.log(level, msg)
 
     def on_fill(self, fill: Any) -> None:
         """Broker deal (csys DealFill) → FILL / TRADE lines and trades CSV."""

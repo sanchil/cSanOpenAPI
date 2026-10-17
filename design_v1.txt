@@ -632,6 +632,8 @@ Out of scope (unless a task explicitly reopens them):
   V1-T35 DONE        capp/tradelog TradeLogAgent + MLRecorder (2026-10-15)
   V1-T36 DONE        Trade journal: fills, slippage, costs, MFE/MAE (2026-10-15)
   V1-T37 DONE        tools/signal_eval.py offline signal evaluation (2026-10-15)
+  V1-T38 DONE        ProfitTrail: ATR trailing profit lock on Strategy_8 (2026-10-17)
+  V1-T39 DONE        Bar gap resync after host sleep / stall, no stale synthetic bar (2026-10-17)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1682,6 +1684,48 @@ across the gap; UTC parsing); app-generated features CSVs (dry-run
 harness) parse with all default columns, gate and flip sections; printed
 rows == --out rows.
 
+TASK V1-T38:  [DONE 2026-10-17]  ProfitTrail on Strategy_8 (TASKS.txt TASK 15)
+
+Live 2026-10-16: BUY 15:46 @157.941 reached MFE +39.7p and closed +11.8p.
+Structure exits give back about one swing (a counter extremum must confirm
+PT_ORDER runs late, or price must break the last confirmed opposite
+extremum); the host also slept 17:00→18:40 with the trade open.
+Delivered (capp/strategies/strategies.py, not MQ4):
+  trail_exit(side, entry, best, close, atr, activate_atr, trail_atr) — pure.
+  ProfitTrail — per-symbol best high / low since entry; once best is
+  S8_TRAIL_ACTIVATE_ATR (3.0) ATRs in profit, a close S8_TRAIL_ATR (2.0)
+  ATRs back from best → CLOSE. After a trail exit, same-side signals are
+  NOSIG until the strategy output leaves that side (no re-buying the top).
+  observe() extends best with bars reloaded after a gap (V1-T39).
+  CTraderApp._finish_signal_cycle applies it for trail_strategies = {8}
+  on live cycles; journal exit reason "CLOSE (trail: giveback >= 2 ATR
+  after >= 3 ATR profit)". Only ever emits CLOSE: I1–I10 unchanged.
+  Shadow book: Strategy_8 paper follows the trailed output; Peak/Trough
+  paper stays the raw signal, so the two now measure the trail's effect.
+Verified: unit cases (BUY / SELL, not armed, NaN, block / unblock, observe,
+entry fallback); replay of the day's 25 trades from the log: 15:46 BUY
++11.8 → +33.6p, day −45.3 → −27.4p (one day — defaults are not tuned);
+fake-API app check: trail CLOSE closes a dry-run position, next bar NOSIG.
+
+TASK V1-T39:  [DONE 2026-10-17]  Host sleep / feed stall handling (TASK 15)
+
+2026-10-16 log: 9 silent gaps (16–100 min) from host sleep, each ending in
+a "(synthetic)" bar stamped at the pre-sleep minute, then indicators and
+extrema computed across the hole (no backfill).
+Delivered (capp/ctraderapp.py):
+  _apply_live_trendbar: minutes > prev + 1 bar → _resync_history: log
+  "⚠️ bar gap N min", reload bar_count trendbars (get_trendbars), replace
+  the series, feed missed bars to ProfitTrail.observe, run one live cycle
+  tagged "(resync)". Live updates are ignored while the reload is in
+  flight. Reload failure → old behaviour (append across the gap) + ❌ line.
+  on_tick: no synthetic bar once a live trendbar was seen for the symbol.
+  api.on_disconnected → trade log line. TradeLogAgent.note() for ops lines.
+Ops: keep the host awake while trading (systemd-inhibit --what=sleep:idle
+python main.py, or OS power settings / an always-on VM).
+Verified with a fake API: 39-minute gap → one reload, series ends at the
+new bar, same-minute update stays in place; spot without trendbar after
+live bars → no synthetic bar; log shows gap / reload / (resync) lines.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1728,6 +1772,9 @@ rows == --out rows.
   V1-T36   E       DONE        Trade journal (real fills, slippage, spread,
                                costs, MFE / MAE, bars, exit reason)
   V1-T37   E       DONE        Offline signal evaluation (tools/signal_eval.py)
+  V1-T38   B       DONE        ProfitTrail ATR profit lock over Strategy_8
+  V1-T39   E       DONE        Bar gap → history reload; synthetic fallback off
+                               once live trendbars flow; disconnects logged
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 

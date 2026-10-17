@@ -153,9 +153,11 @@ class TradeJournal:
         t_sig: Optional[T_SIG],
         active: int,
         when: Optional[datetime],
+        reason: Optional[str] = None,
     ) -> None:
         """Advance excursion with the bar that just closed, then record what
-        the executor policy will do with ``trade_sig``."""
+        the executor policy will do with ``trade_sig``. ``reason`` overrides
+        the derived close reason."""
         if pip > 0:
             self.pips[symbol_id] = pip
         self._advance(symbol_id, bar_high, bar_low)
@@ -167,10 +169,11 @@ class TradeJournal:
         elif not flat and (trade_sig == SIG.CLOSE or (trade_sig in (SIG.BUY, SIG.SELL) and trade_sig != position_side)):
             kind = "close"
             deal_side = SIG.SELL if position_side == SIG.BUY else SIG.BUY
-            if trade_sig == SIG.CLOSE:
-                reason = f"CLOSE ({self._driver(t_sig, active, cause=True)})"
-            else:
-                reason = f"opposite {trade_sig.name}"
+            if not reason:
+                reason = (
+                    f"CLOSE ({self._driver(t_sig, active, cause=True)})"
+                    if trade_sig == SIG.CLOSE else f"opposite {trade_sig.name}"
+                )
         else:
             self.intents.pop(symbol_id, None)
             return
