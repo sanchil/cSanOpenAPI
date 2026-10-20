@@ -105,6 +105,10 @@ Out of scope (unless a task explicitly reopens them):
   Step 5 — first run in dry-run, then live
       python main.py --dry-run          # or CTRADER_DRY_RUN=1 (env or .env)
       python main.py                    # LIVE: sends real market orders
+      systemd-inhibit --what=sleep:idle --why="cTrader bot" python main.py
+                                        # keep the host awake while live (V1-T40)
+      python main.py --pt-mode peaks --no-profit-trail
+                                        # Strategy_8 opt-outs (default: structure + trail)
     Dry-run: signals computed and logged, orders simulated ([EXEC] … (dry_run)),
     startup reconcile skipped (local book starts empty), PnL avg forced to 0.
 
@@ -183,6 +187,7 @@ Out of scope (unless a task explicitly reopens them):
                               # MarketMetrics atomic truths (V1-T33)
     tradelog/{agent,ml}.py # TradeLogAgent + MLRecorder (V1-T35)
   tools/signal_eval.py    # offline signal scoring over features CSVs (V1-T37)
+  tools/replay.py         # bar fetch (read-only) + strategy variant replay (V1-T40)
   main.py                 # PRIMARY entry: active_strategy=8, --dry-run flag
   main_twisted.py         # optional OHLCV HTTP helper (port 8080)
   main_fastapi.py         # incomplete experiment — do not use
@@ -433,7 +438,8 @@ Out of scope (unless a task explicitly reopens them):
               Drops Strategy_6's fast==HOLD close branch. Threshold:
               CStrategies(decel_profit_close_threshold=2.0).
   Strategy_8  **LIVE DEFAULT** (V1-T30, not MQ4) — market structure on
-              peak_trough_sig (pt_mode="structure" since V1-T31),
+              peak_trough_sig (pt_mode="structure" + ProfitTrail, the Oct 19
+              build, restored by V1-T41; "peaks" / no trail are opt-outs),
               stateless, no PnL gate:
                 pt SIDEWAYS (flat / conflicting structure) → CLOSE (always)
                 pt BUY / SELL (peaks + troughs score)      → that side
@@ -634,6 +640,8 @@ Out of scope (unless a task explicitly reopens them):
   V1-T37 DONE        tools/signal_eval.py offline signal evaluation (2026-10-15)
   V1-T38 DONE        ProfitTrail: ATR trailing profit lock on Strategy_8 (2026-10-17)
   V1-T39 DONE        Bar gap resync after host sleep / stall, no stale synthetic bar (2026-10-17)
+  V1-T40 DONE        TASK 16: S8 back to peaks-only, trail opt-in, tools/replay.py (2026-10-20)
+  V1-T41 DONE        TASK 17: S8 defaults back to structure + trail (Oct 19 build) (2026-10-20)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1726,6 +1734,54 @@ Verified with a fake API: 39-minute gap → one reload, series ends at the
 new bar, same-minute update stays in place; spot without trendbar after
 live bars → no synthetic bar; log shows gap / reload / (resync) lines.
 
+TASK V1-T40:  [DONE 2026-10-20]  Strategy_8 review, Oct 19 slide (TASKS.txt TASK 16)
+
+Why the Oct 20 01:30–04:40Z slide (≈158.59 → 158.15) was missed: the host
+slept. trade_2026-10-19.log has no bars 20:23Z → 05:25Z (also 12:22→13:07,
+16:13→18:26). On wake TCP drops, ClientService reconnects, on_init reseeds
+2000 bars, so V1-T39's gap check never sees the hole. At 05:25Z the
+post-slide structure read BUY near the low. Not a signal fault.
+Trail (V1-T38) was not the regression: live Oct 15 structure/no trail +14.52
+USD (5 trades, partial day), Oct 16 structure/no trail −46.15 (26 trades,
+22 SIDEWAYS exits), Oct 19 structure+trail −10.67 (12 trades).
+Delivered:
+  CTraderApp(pt_mode="peaks", profit_trail=False) → SanSignals(pt_mode),
+  trail_strategies = {8} only when enabled; main.py --pt-mode /
+  --profit-trail (env CTRADER_PT_MODE / CTRADER_PROFIT_TRAIL). SanSignals
+  default pt_mode = "peaks". T_SIG.peak_trough_sig_alt = the other mode,
+  logged as shadow "Peak/Trough alt". on_init logs "Reconnected — reseeding
+  history (≈N min since last bar)" on every reconnect.
+  tools/replay.py: --fetch (read-only get_trendbars, 2-day chunks →
+  logs/bars/*.csv); replay mirrors the live cycle (forming bar = open,
+  shift=1, executor policy at open[k], ProfitTrail on bar k-1).
+  Fidelity vs live logs (Oct 16 + 19, 874 bars): peak_trough_sig 94 %,
+  Strategy_7 90 % bar agreement.
+Replay Oct 9–20 (7 trading days, USDJPY M1, 10k units; costs 0.3p + 0.70 USD):
+  variant              trades  gross pips  net USD   slide window 01:00–05:30Z
+  S8 peaks                347      −60.2   −346.90     −6.0p
+  S8 peaks+trail          349      −97.5   −372.29     −5.6p
+  S8 structure            412     −169.4   −473.87     +6.8p
+  S8 structure+trail      412     −196.4   −490.96    +10.8p
+  S7                       97      +11.4    −79.10    +24.7p (SELL 02:10, open +35p)
+  S6                      275      −82.2   −296.76     −1.8p
+  Read: peaks beats structure, the trail hurts every S8 variant, but no
+  S8 variant is profitable: ~50 trades/day × ≈1.4p cost dominates. S7 (4×
+  fewer trades) is the only variant positive gross and the only one that
+  held the slide. Next levers (not done): fewer S8 flips (PT_ORDER /
+  PT_ZONE_ATR / SIDEWAYS→hold instead of CLOSE), or S7 as live default.
+
+TASK V1-T41:  [DONE 2026-10-20]  Back to the Oct 19 build (TASKS.txt TASK 17)
+
+User request: Strategy_8 on structure (peaks + troughs) + ProfitTrail again.
+Defaults flipped back: SanSignals(pt_mode="structure"), CTraderApp(
+pt_mode="structure", profit_trail=True); main.py --pt-mode peaks /
+--no-profit-trail opt out (env CTRADER_PT_MODE, CTRADER_PROFIT_TRAIL=0),
+now resolved after load_config() so .env values apply. Kept from V1-T40
+(no trading effect): peak_trough_sig_alt shadow (now = peaks), reconnect
+log line, tools/replay.py.
+Verified: Strategy_8 + ProfitTrail per-bar output on 200 replayed bars is
+identical to the cSanOpenAPI (Oct 19) tree; app defaults structure / {8}.
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1775,6 +1831,9 @@ live bars → no synthetic bar; log shows gap / reload / (resync) lines.
   V1-T38   B       DONE        ProfitTrail ATR profit lock over Strategy_8
   V1-T39   E       DONE        Bar gap → history reload; synthetic fallback off
                                once live trendbars flow; disconnects logged
+  V1-T40   B       DONE        S8 peaks-only default, trail opt-in, structure
+                               shadow (peak_trough_sig_alt), tools/replay.py
+  V1-T41   B       DONE        S8 defaults reverted to structure + trail
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 

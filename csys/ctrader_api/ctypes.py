@@ -286,8 +286,10 @@ class T_SIG:
     base_slope_sig_v2: SIG = SIG.NOSIG
     kin_v2_data: DTYPE = field(default_factory=DTYPE)
 
-    # peak_trough_sig (V1-T29/T31): peaks + troughs structure; read by Strategy_8
+    # peak_trough_sig (V1-T29/T31): SanSignals.pt_mode ("structure");
+    # read by Strategy_8. _alt = the other pt_mode, a logged shadow only.
     peak_trough_sig: SIG = SIG.NOSIG
+    peak_trough_sig_alt: SIG = SIG.NOSIG
 
     # slope_distribution_sig (V1-T34): shape of 1-bar close slopes; BUY / SELL /
     # NOTRADE (whipsaw veto) / NOSIG. No strategy reads it yet.

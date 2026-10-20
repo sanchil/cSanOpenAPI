@@ -9,6 +9,9 @@ Usage:
                                 # trade log level (off|bar|signals|debug, default
                                 # signals; env CTRADER_LOG_LEVEL) → logs/trade_<UTC day>.log;
                                 # --ml-capture (env CTRADER_ML_CAPTURE=1) → logs/ml/*.csv
+    python main.py --pt-mode peaks --no-profit-trail
+                                # Strategy_8 variant: default structure + trail
+                                # (V1-T41); env CTRADER_PT_MODE / CTRADER_PROFIT_TRAIL=0
 """
 
 import argparse
@@ -41,15 +44,38 @@ if __name__ == "__main__":
         action="store_true",
         help="also write per-bar feature rows to logs/ml/features_<day>.csv",
     )
+    parser.add_argument(
+        "--pt-mode",
+        choices=("peaks", "structure"),
+        default=None,
+        help="peak_trough_sig mode for Strategy_8 (default structure; env CTRADER_PT_MODE)",
+    )
+    parser.add_argument(
+        "--profit-trail",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Strategy_8 ATR trailing profit lock (default on; env CTRADER_PROFIT_TRAIL=0 disables)",
+    )
     args = parser.parse_args()
 
     config = load_config()  # loads .env, so CTRADER_DRY_RUN may come from there
     dry_run = args.dry_run or _env_flag("CTRADER_DRY_RUN")
     print("⚠️  DRY RUN — no orders will be sent" if dry_run else "✅ LIVE — orders will be sent")
+    # Resolved after load_config() so .env values count (flag > env > default)
+    pt_mode = args.pt_mode or os.getenv("CTRADER_PT_MODE", "structure").strip().lower()
+    if pt_mode not in ("peaks", "structure"):
+        parser.error(f"CTRADER_PT_MODE must be peaks or structure, got {pt_mode!r}")
+    profit_trail = args.profit_trail
+    if profit_trail is None:
+        profit_trail = os.getenv("CTRADER_PROFIT_TRAIL", "1").strip().lower() in ("1", "true", "yes", "on")
+    print(f"   Strategy_8: pt_mode={pt_mode} profit_trail={'on' if profit_trail else 'off'}")
 
     trade_log = TradeLogConfig(
         level=args.log_level,
         ml_capture=args.ml_capture or _env_flag("CTRADER_ML_CAPTURE"),
     )
-    app = CTraderApp(config, active_strategy=8, dry_run=dry_run, trade_log=trade_log)  # peak/trough structure (7 = baseSlope v1, 6 = MQ4 parity)
+    app = CTraderApp(
+        config, active_strategy=8, dry_run=dry_run, trade_log=trade_log,
+        pt_mode=pt_mode, profit_trail=profit_trail,
+    )  # peak/trough (7 = baseSlope v1, 6 = MQ4 parity)
     app.run()

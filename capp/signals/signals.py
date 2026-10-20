@@ -590,6 +590,10 @@ class SanSignals:
 
         # --- peak/trough structure (V1-T29): closed bars, ATR-sized zone ---
         t.peak_trough_sig = self._peak_trough(ind, sh, atr_pips, resolve_pip(pip, point))
+        alt = "structure" if self.pt_mode == "peaks" else "peaks"
+        t.peak_trough_sig_alt = self._peak_trough(
+            ind, sh, atr_pips, resolve_pip(pip, point), mode=alt
+        )
 
         # --- price vs MA fast/slow ---
         try:
@@ -637,8 +641,12 @@ class SanSignals:
             self._kin_v1_flat[key] = flat
         return sig
 
-    def _peak_trough(self, ind: IndData, shift: int, atr_pips: float, pip: float) -> SIG:
-        """peak_trough_sig on the last PT_LOOKBACK closed bars of high/low."""
+    def _peak_trough(
+        self, ind: IndData, shift: int, atr_pips: float, pip: float, mode: Optional[str] = None
+    ) -> SIG:
+        """peak_trough_sig on the last PT_LOOKBACK closed bars of high/low
+        (``mode`` defaults to self.pt_mode)."""
+        mode = mode or self.pt_mode
         if atr_pips != atr_pips or atr_pips <= 0.0:
             return SIG.NOSIG
         n = len(ind.high)
@@ -647,10 +655,10 @@ class SanSignals:
         if end <= start or len(ind.low) != n:
             return SIG.NOSIG
         highs = list(islice(ind.high, start, end))
-        lows = list(islice(ind.low, start, end)) if self.pt_mode == "structure" else None
+        lows = list(islice(ind.low, start, end)) if mode == "structure" else None
         close = ind.close[end - 1] if len(ind.close) == n else None
         return self.peak_trough_sig(
-            highs, lows, zone=PT_ZONE_ATR * atr_pips, pip_size=pip, mode=self.pt_mode,
+            highs, lows, zone=PT_ZONE_ATR * atr_pips, pip_size=pip, mode=mode,
             close=close,
         )
 

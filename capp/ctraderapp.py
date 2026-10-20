@@ -61,6 +61,8 @@ class CTraderApp:
         trading_enabled: bool = True,
         dry_run: bool = False,
         trade_log: Optional[TradeLogConfig] = None,
+        pt_mode: str = "structure",
+        profit_trail: bool = True,
     ):
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
@@ -95,14 +97,16 @@ class CTraderApp:
         self._resyncing: set = set()
 
         # design.txt: signals → strategies (once per cycle)
-        self.signals = SanSignals(default_shift=1)
+        # peak_trough_sig mode for Strategy_8 (V1-T41: "structure" default again)
+        self.signals = SanSignals(default_shift=1, pt_mode=pt_mode)
         self.strategies = CStrategies(self.signals, active=active_strategy)
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
         self.last_total_trade_profits: float = 0.0
         # V1-T38: ATR trailing profit lock over these strategies' output
+        # (on by default again since V1-T41; profit_trail=False opts out)
         self.profit_trail = ProfitTrail()
-        self.trail_strategies = {8}
+        self.trail_strategies = {8} if profit_trail else set()
 
         # TASK 11: at most one account PnL fetch in flight (multi-symbol bars join it)
         self._pnl_fetch_inflight: Optional[defer.Deferred] = None
@@ -130,6 +134,11 @@ class CTraderApp:
     # ------------------------------------------------------------------ init
     def on_init(self):
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
+        if self._last_live_bar_minutes:
+            # Reconnect (e.g. host woke from sleep): history is reseeded below,
+            # so the V1-T39 gap check never sees the hole — log it here (V1-T40)
+            gap = int(time.time() // 60) - max(self._last_live_bar_minutes.values())
+            self._note(f"⚠️  Reconnected — reseeding history (≈{gap} min since last bar)")
         print("Subscribing to spots...")
 
         # Step 1: Subscribe to spots (required before live trendbars)

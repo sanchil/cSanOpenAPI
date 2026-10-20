@@ -53,6 +53,7 @@ Rotation = Union[str, int]
 # Display names for T_SIG fields in the comparison line
 SIGNAL_LABELS = {
     "peak_trough_sig": "Peak/Trough",
+    "peak_trough_sig_alt": "Peak/Trough alt",
     "slope_dist_sig": "Slope Distribution",
     "base_slope_sig": "Kinetic MQ4",
     "base_slope_sig_v1": "Kinetic v1",
@@ -76,7 +77,9 @@ class TradeLogConfig:
     utc: bool = True                       # period boundaries in UTC (else local)
     console: bool = True                   # echo log lines to stdout
     compare_strategies: Tuple[int, ...] = (7, 8, 9)
-    compare_signals: Tuple[str, ...] = ("peak_trough_sig", "slope_dist_sig", "base_slope_sig_v2")
+    compare_signals: Tuple[str, ...] = (
+        "peak_trough_sig", "peak_trough_sig_alt", "slope_dist_sig", "base_slope_sig_v2"
+    )
     shadow_book: bool = True
     trade_journal: bool = True             # real-trade quality + trades_<period>.csv
     ml_capture: bool = False               # per-bar feature rows → CSV

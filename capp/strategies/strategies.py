@@ -11,7 +11,9 @@ kinetic_acceleration_sig_v1 and splits CLOSE into flat vs. deceleration.
 Strategy_6 remains the MQ4-parity baseline.
 
 Strategy_8 (V1-T30, not MQ4) trades market structure from peak_trough_sig:
-peaks + troughs structure → BUY / SELL, flat or conflicting → CLOSE.
+BUY / SELL enter, SIDEWAYS → CLOSE. The signal runs pt_mode="structure"
+(peaks + troughs, V1-T31; restored as default by V1-T41 after V1-T40 tried
+peaks-only). pt_mode="peaks" stays selectable via CTraderApp.
 
 Strategy_9 (V1-T32, not MQ4) trades kinetic_acceleration_sig_v2: any CLOSE
 or SIDEWAYS closes (no PnL gate — quick exit), BUY / SELL enter.
@@ -23,7 +25,7 @@ that best high / low turns the bar's signal into CLOSE. Structure exits alone
 give back about one full swing. After a trail exit, same-side entries are
 blocked until the strategy output leaves that side, so a still-BUY structure
 does not re-buy the top. It only ever emits CLOSE (no SL/TP, policy I1–I10
-unchanged).
+unchanged). On by default (V1-T41); CTraderApp(profit_trail=False) opts out.
 """
 
 from __future__ import annotations
@@ -310,9 +312,10 @@ class CStrategies:
           - BUY / SELL (peaks + troughs score > 0 / < 0) → BUY / SELL
           - otherwise (too few extrema, NOSIG)       → NOSIG (hold)
 
-        peak_trough_sig defaults to pt_mode="structure" (V1-T31): peaks and
-        troughs weigh equally, and a close beyond the last peak / trough zone
-        counts at once, so a broken uptrend reads SIDEWAYS and closes.
+        peak_trough_sig defaults to pt_mode="structure" (V1-T31, restored by
+        V1-T41): peaks and troughs weigh equally, and a close beyond the last
+        peak / trough zone counts at once, so a broken uptrend reads SIDEWAYS
+        and closes. pt_mode="peaks" (V1-T29 baseline) is selectable.
 
         Stateless. peak_trough_sig changes only on a newly confirmed extremum
         or a zone break, so the output is naturally persistent. An opposite
