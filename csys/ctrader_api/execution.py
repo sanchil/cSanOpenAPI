@@ -285,6 +285,12 @@ class OrderExecutor:
             result.detail = "executor disabled"
             return self._finish(result)
 
+        # V1-T42: no orders while the API session is down / rebuilding
+        if not self.dry_run and self.api is not None and not getattr(self.api, "is_ready", True):
+            result.action = "skipped"
+            result.detail = "API session not ready (reconnecting)"
+            return self._finish(result)
+
         if symbol_id in self._pending:
             result.action = "skipped"
             result.detail = "order already pending for symbol"

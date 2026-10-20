@@ -140,6 +140,7 @@ Legacy `design.txt` tasks:
 | V1-T29 | Done | `peak_trough_sig` → `T_SIG.peak_trough_sig` (higher/equal-zone/lower peaks); used by Strategy_8 |
 | V1-T30 | Done | Strategy_8 on `peak_trough_sig` (SIDEWAYS → CLOSE, BUY/SELL → side, else hold) — **live default** |
 | V1-T40 | Done | Strategy_8 back to `pt_mode="peaks"`, ProfitTrail opt-in (`--pt-mode`, `--profit-trail`); `peak_trough_sig_alt` shadow; `tools/replay.py` |
+| V1-T42 | Done | Connection health: 10 s heartbeat, watchdog (probe / abort / sleep jump), session rebuild on every connect, in-session token refresh + `.ctrader_tokens.json`, `send()` → `NotReadyError` / `ApiError`, trading gated until reconcile, `deploy/ctrader-bot.service` |
 | V1-T41 | Done | Strategy_8 defaults back to `pt_mode="structure"` + ProfitTrail (Oct 19 build); opt out with `--pt-mode peaks` / `--no-profit-trail` |
 | V1-T31 | Done | `peak_trough_sig` rework: peaks + troughs equal weight (score), zone-break override, default `pt_mode="structure"` |
 | V1-T27 | Done | v1 `mode="acc"` (ATR-normalized acceleration, entry margin) + real flat-regime hysteresis |

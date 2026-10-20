@@ -50,17 +50,29 @@ Synced with code: 2026-10-12 (V1-T02). Blueprint: design_v1.txt §1.5–1.6.
   _on_connected()
        │
        ▼
+  _build_session()                # V1-T42: one Deferred chain per TCP connect
   _authenticate_application()     # ProtoOAApplicationAuthReq
        │
        ▼  (ProtoOAApplicationAuthRes)
+  [token expiry known and < 1 day → refresh_access_token()  (ProtoOARefreshTokenReq)]
   _authenticate_account()         # ProtoOAAccountAuthReq
-       │
+       │   CH_ACCESS_TOKEN_INVALID / OA_AUTH_TOKEN_EXPIRED → refresh → retry once
        ▼  (ProtoOAAccountAuthRes)  → _ready = True
-  on_ready()  ──►  CTraderApp.on_init()
+  on_ready()  ──►  CTraderApp.on_init()     # on EVERY connect, not only startup
 
-  ProtoOAErrorRes at any point → _emit_error (logs ❌ code + description);
-  if still not ready → "Auth failed before ready — stopping" → reactor.stop.
-  Heartbeats are swallowed. Everything else → Protobuf.extract → on_message.
+  Session build failure: before the first ready session → fatal (exit 1);
+  later → abort socket, ClientService reconnects (backoff 1→30 s); fatal
+  after MAX_AUTH_FAILURES in a row. ProtoOAErrorRes is logged by _emit_error
+  and, for api.send() callers, raised as ApiError. send() before ready →
+  NotReadyError. Heartbeats are swallowed. Everything else → on_message.
+
+  Health loops (started in connect()):
+    heartbeat 10 s   → ProtoHeartbeatEvent
+    watchdog   5 s   → silence > 20 s: ProtoOAVersionReq probe; > 40 s or a
+                       wall-clock jump (host sleep): abort socket → reconnect
+    token     1 h    → refresh ahead of a known expiry
+  Disconnect → client logs it (on_status → trade log) → CTraderApp._on_disconnected
+  pauses trading (_hist_ready = False) until the rebuilt session reconciles.
 
 
 3. Startup sequence (after auth) — deferred callback chain

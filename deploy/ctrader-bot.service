@@ -1,0 +1,35 @@
+# systemd user unit for the live bot (V1-T42, TASKS.txt TASK 18).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/ctrader-bot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ctrader-bot
+#   loginctl enable-linger $USER        # keep running after logout
+# Logs:  journalctl --user -u ctrader-bot -f   (+ logs/trade_<day>.log)
+# Stop:  systemctl --user stop ctrader-bot
+#
+# The app reconnects and rebuilds its session by itself; Restart=always only
+# covers crashes and the deliberate non-zero exit on unrecoverable auth
+# errors (CTraderOpenAPI.fatal). systemd-inhibit keeps the host from
+# sleeping while the bot runs (the cause of the Oct 19-20 missed slide).
+# Edit the two paths below if your checkout / conda env differ.
+
+[Unit]
+Description=cTrader Open API trading bot (claudeApp_v1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/spaces/cTrader/claude/claudeApp_v1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --who=ctrader-bot --why="live trading" \
+    %h/dev/miniconda3/envs/genai/bin/python main.py
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target

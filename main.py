@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import os
+import sys
 
 from csys import load_config
 from capp import CTraderApp
@@ -79,3 +80,6 @@ if __name__ == "__main__":
         pt_mode=pt_mode, profit_trail=profit_trail,
     )  # peak/trough (7 = baseSlope v1, 6 = MQ4 parity)
     app.run()
+    # Non-zero on an unrecoverable session error so a supervisor
+    # (deploy/ctrader-bot.service, Restart=always) restarts us (V1-T42)
+    sys.exit(1 if app.api.fatal else 0)

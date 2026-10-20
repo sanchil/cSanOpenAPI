@@ -29,6 +29,10 @@ from capp.tradelog import TradeLogAgent, TradeLogConfig
 from capp.utils import PositionPnL, SanUtils
 
 
+RECONCILE_ATTEMPTS = 3      # reconcile tries per session before reconnecting
+RECONCILE_RETRY_S = 5.0
+
+
 class CTraderApp:
     """
     Business-layer trading app (capp) over the system layer (csys).
@@ -68,6 +72,8 @@ class CTraderApp:
         self.api.on_ready = self.on_init
         self.api.on_message = self.on_message
         self.api.on_disconnected = self._on_disconnected
+        # V1-T42: connect / auth / watchdog / token events → console + trade log
+        self.api.on_status = self._note
 
         # Per-symbol historical data: Dict[symbol_id, IndData]
         self.hist_bars: Dict[int, IndData] = {}
@@ -95,6 +101,11 @@ class CTraderApp:
         # and symbols reloading history after a bar gap (host sleep / stall)
         self._live_seen: set = set()
         self._resyncing: set = set()
+        # V1-T42: one number per session build (on_init); callbacks of an
+        # older session (connection dropped mid-init) are ignored
+        self._session = 0
+        # Last bar seen before a reseed, so ProfitTrail can see missed bars
+        self._pre_reseed_last_time: Dict[int, datetime] = {}
 
         # design.txt: signals → strategies (once per cycle)
         # peak_trough_sig mode for Strategy_8 (V1-T41: "structure" default again)
@@ -133,6 +144,11 @@ class CTraderApp:
 
     # ------------------------------------------------------------------ init
     def on_init(self):
+        """Runs on every authenticated session (first connect and each
+        reconnect): resubscribe → symbols → reseed → reconcile → live bars."""
+        self._session += 1
+        gen = self._session
+        self._hist_ready = False  # no orders until reconcile finishes
         print(f"✅ cTrader connected! Account: {self.api.account_id}")
         if self._last_live_bar_minutes:
             # Reconnect (e.g. host woke from sleep): history is reseeded below,
@@ -143,18 +159,26 @@ class CTraderApp:
 
         # Step 1: Subscribe to spots (required before live trendbars)
         d = self.api.subscribe_spots(self.fxpair_arr, subscribe_to_timestamp=True)
-        d.addCallback(self.on_spots_subscribed)
-        d.addErrback(self.on_subscription_error)
+        d.addCallback(self.on_spots_subscribed, gen)
+        d.addErrback(self.on_subscription_error, gen)
 
-    def on_spots_subscribed(self, _):
+    def _stale(self, gen: int) -> bool:
+        """True for a callback from a session that was since replaced."""
+        return gen != self._session
+
+    def on_spots_subscribed(self, _, gen: int = 0):
+        if self._stale(gen):
+            return
         print("✅ Successfully subscribed to live prices")
 
         # Step 2: Symbol list for names
         d = self.api.get_symbols()
-        d.addCallback(self.on_symbols_received)
-        d.addErrback(self.on_symbols_error)
+        d.addCallback(self.on_symbols_received, gen)
+        d.addErrback(self.on_symbols_error, gen)
 
-    def on_symbols_received(self, response):
+    def on_symbols_received(self, response, gen: int = 0):
+        if self._stale(gen):
+            return
         symbols = getattr(response, "symbol", [])
         for symbol in symbols:
             self.symbol_map[symbol.symbolId] = symbol.symbolName
@@ -165,11 +189,13 @@ class CTraderApp:
             self.fxpair_arr,
             client_msg_id="symbols_by_id",
         )
-        d.addCallback(self.on_symbol_details_received)
-        d.addErrback(self.on_symbol_details_error)
+        d.addCallback(self.on_symbol_details_received, gen)
+        d.addErrback(self.on_symbol_details_error, gen)
 
-    def on_symbol_details_received(self, response):
+    def on_symbol_details_received(self, response, gen: int = 0):
         """Cache symbol_id → SymbolMeta (digits, pipPosition → pip_size)."""
+        if self._stale(gen):
+            return
         full_symbols = list(getattr(response, "symbol", []) or [])
         for sym in full_symbols:
             sid = int(getattr(sym, "symbolId", 0) or 0)
@@ -200,9 +226,11 @@ class CTraderApp:
 
         print(f"✅ Symbol meta cached for {len(self.symbol_meta)} ids")
         # Step 4: Seed IndData from historical trendbars
-        self.init_ind_data()
+        self.init_ind_data(gen)
 
-    def on_symbol_details_error(self, failure):
+    def on_symbol_details_error(self, failure, gen: int = 0):
+        if self._stale(gen):
+            return
         print(
             f"⚠️  SymbolById failed: {failure.getErrorMessage()} "
             f"— using default pip_size=0.0001 for watched symbols"
@@ -218,16 +246,26 @@ class CTraderApp:
                 point=0.00001,
             )
             self.symbol_digits[sid] = 5
-        self.init_ind_data()
+        self.init_ind_data(gen)
 
-    def on_subscription_error(self, failure):
-        print(f"❌ Subscription failed: {failure}")
+    def on_subscription_error(self, failure, gen: int = 0):
+        if self._stale(gen):
+            return
+        self._session_step_failed("spot subscription", failure)
 
-    def on_symbols_error(self, failure):
-        print(f"❌ Failed to load symbols: {failure}")
+    def on_symbols_error(self, failure, gen: int = 0):
+        if self._stale(gen):
+            return
+        self._session_step_failed("symbol list", failure)
+
+    def _session_step_failed(self, step: str, failure) -> None:
+        """A session-build step failed: drop the connection so the client
+        rebuilds the whole session, instead of running half-initialised."""
+        self._note(f"❌ Session init: {step} failed ({failure.getErrorMessage()}) — reconnecting")
+        self.api._drop_connection(f"{step} failed")
 
     # ---------------------------------------------------------- historical seed
-    def init_ind_data(self):
+    def init_ind_data(self, gen: Optional[int] = None):
         """Populate IndData for each watched symbol (PhyBot.InitIndData parity).
 
         From Open API ProtoOASymbol (via symbol_meta cache):
@@ -240,6 +278,7 @@ class CTraderApp:
 
         Then loads historical trendbars into OHLCV deques.
         """
+        gen = self._session if gen is None else gen
         self._hist_pending = len(self.fxpair_arr)
         self._hist_ready = False
         # design.txt: M1 _Period = 60 seconds; bar_interval matches for synthetic clock
@@ -247,6 +286,9 @@ class CTraderApp:
         self.bar_interval = period_secs
 
         for symbol_id in self.fxpair_arr:
+            old = self.hist_bars.get(symbol_id)
+            if old is not None and old.time:
+                self._pre_reseed_last_time[symbol_id] = old.time[-1]
             data = IndData(capacity=self.bar_count)
             meta = self.symbol_meta.get(symbol_id)
             if meta is not None:
@@ -279,10 +321,12 @@ class CTraderApp:
                 count=self.bar_count,
                 client_msg_id=f"hist_{symbol_id}",
             )
-            d.addCallback(self.on_historical_bars_received, symbol_id)
-            d.addErrback(self.on_historical_error, symbol_id)
+            d.addCallback(self.on_historical_bars_received, symbol_id, gen)
+            d.addErrback(self.on_historical_error, symbol_id, gen)
 
-    def on_historical_bars_received(self, response, symbol_id: int):
+    def on_historical_bars_received(self, response, symbol_id: int, gen: int = 0):
+        if self._stale(gen):
+            return
         raw_bars = list(getattr(response, "trendbar", []) or [])
         symbol_name = self.symbol_map.get(symbol_id, f"ID_{symbol_id}")
         data = self.hist_bars[symbol_id]
@@ -297,6 +341,13 @@ class CTraderApp:
         loaded = data.load_bars(decoded)
         if decoded:
             self._last_live_bar_minutes[symbol_id] = decoded[-1]["utc_minutes"]
+        # Reseed after a reconnect: show the trail the bars it missed (V1-T42)
+        last_seen = self._pre_reseed_last_time.pop(symbol_id, None)
+        if last_seen is not None:
+            missed = [b for b in decoded[:-1] if b["time"] > last_seen]
+            self.profit_trail.observe(
+                symbol_id, [b["high"] for b in missed], [b["low"] for b in missed]
+            )
 
         # Once-per-seed: indicators + signals only (no live trading until ready)
         trade_sig = SIG.NOSIG
@@ -321,26 +372,33 @@ class CTraderApp:
 
         self._hist_pending -= 1
         if self._hist_pending <= 0:
-            self._on_all_historical_loaded()
+            self._on_all_historical_loaded(gen)
 
-    def on_historical_error(self, failure, symbol_id: int):
+    def on_historical_error(self, failure, symbol_id: int, gen: int = 0):
+        if self._stale(gen):
+            return
         print(
             f"❌ Failed to load historical data for symbol {symbol_id}: "
             f"{failure.getErrorMessage()}"
         )
         self._hist_pending -= 1
         if self._hist_pending <= 0:
-            self._on_all_historical_loaded()
+            self._on_all_historical_loaded(gen)
 
-    def _on_all_historical_loaded(self):
-        """After history is in: reconcile positions, then subscribe live bars."""
-        self._hist_ready = True
+    def _on_all_historical_loaded(self, gen: int = 0, attempt: int = 1):
+        """After history is in: reconcile positions, then subscribe live bars.
+        Trading (``_hist_ready``) resumes only once the book is reconciled
+        (V1-T42), so a reconnect never acts on a stale position book."""
+        if self._stale(gen):
+            return
         print("Reconciling open positions…")
         d = self.executor.sync_positions()
-        d.addCallback(self._on_positions_synced)
-        d.addErrback(self._on_positions_sync_error)
+        d.addCallback(self._on_positions_synced, gen)
+        d.addErrback(self._on_positions_sync_error, gen, attempt)
 
-    def _on_positions_synced(self, positions):
+    def _on_positions_synced(self, positions, gen: int = 0):
+        if self._stale(gen):
+            return
         n = len(positions) if positions is not None else 0
         print(f"✅ Position book synced ({n} open under label={self.executor.label})")
         # PhyBot: TotalOrders = positions with our label
@@ -353,13 +411,22 @@ class CTraderApp:
             if sid in self.hist_bars:
                 self.hist_bars[sid].trade_position = pos.side
                 self.hist_bars[sid].total_orders = 1
-        self._subscribe_live_trendbars()
+        self._hist_ready = True
+        self._note(f"▶️  Session {gen} ready — trading enabled ({n} open position(s))")
+        self._subscribe_live_trendbars(gen)
 
-    def _on_positions_sync_error(self, failure):
-        print(f"⚠️  Position reconcile failed: {failure.getErrorMessage()} — continuing")
-        self._subscribe_live_trendbars()
+    def _on_positions_sync_error(self, failure, gen: int = 0, attempt: int = 1):
+        if self._stale(gen):
+            return
+        why = failure.getErrorMessage()
+        if attempt < RECONCILE_ATTEMPTS:
+            self._note(f"⚠️  Position reconcile failed ({why}) — retry {attempt + 1}/{RECONCILE_ATTEMPTS} in {RECONCILE_RETRY_S:g}s")
+            from twisted.internet import reactor
+            reactor.callLater(RECONCILE_RETRY_S, self._on_all_historical_loaded, gen, attempt + 1)
+            return
+        self._session_step_failed("position reconcile", failure)
 
-    def _subscribe_live_trendbars(self):
+    def _subscribe_live_trendbars(self, gen: int = 0):
         print("Subscribing to live trendbars...")
         for symbol_id in self.fxpair_arr:
             d = self.api.subscribe_live_trendbars(
@@ -373,11 +440,11 @@ class CTraderApp:
                     f"{self.symbol_map.get(sid, sid)}"
                 )
             )
+            # No live bars = no trading: rebuild the session (V1-T42)
             d.addErrback(
-                lambda f, sid=symbol_id: print(
-                    f"❌ Live trendbar subscribe failed for {sid}: "
-                    f"{f.getErrorMessage()}"
-                )
+                lambda f, sid=symbol_id: None
+                if self._stale(gen)
+                else self._session_step_failed(f"live trendbar subscribe ({sid})", f)
             )
 
     # --------------------------------------------------------------- messages
@@ -557,9 +624,11 @@ class CTraderApp:
         self._fire_on_bar_event()
 
     def _on_disconnected(self, reason) -> None:
-        msg = reason.getErrorMessage() if hasattr(reason, "getErrorMessage") else str(reason)
-        if self.trade_log.enabled:
-            self.trade_log.note(f"⚠️  Disconnected: {msg}")
+        """The client already logged the drop (on_status); pause trading until
+        on_init rebuilds the session and reconciles (V1-T42)."""
+        _ = reason
+        self._hist_ready = False
+        self._note("⏸️  Trading paused until the session is rebuilt")
 
     def _note(self, msg: str) -> None:
         """Console + trade log (ops events the log must show)."""

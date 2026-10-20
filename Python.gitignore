@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# refreshed OAuth tokens (V1-T42)
+.ctrader_tokens.json
+.ctrader_tokens.tmp

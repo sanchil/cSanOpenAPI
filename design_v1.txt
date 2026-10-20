@@ -107,6 +107,8 @@ Out of scope (unless a task explicitly reopens them):
       python main.py                    # LIVE: sends real market orders
       systemd-inhibit --what=sleep:idle --why="cTrader bot" python main.py
                                         # keep the host awake while live (V1-T40)
+      systemctl --user enable --now ctrader-bot
+                                        # supervised: deploy/ctrader-bot.service (V1-T42)
       python main.py --pt-mode peaks --no-profit-trail
                                         # Strategy_8 opt-outs (default: structure + trail)
     Dry-run: signals computed and logged, orders simulated ([EXEC] … (dry_run)),
@@ -642,6 +644,7 @@ Out of scope (unless a task explicitly reopens them):
   V1-T39 DONE        Bar gap resync after host sleep / stall, no stale synthetic bar (2026-10-17)
   V1-T40 DONE        TASK 16: S8 back to peaks-only, trail opt-in, tools/replay.py (2026-10-20)
   V1-T41 DONE        TASK 17: S8 defaults back to structure + trail (Oct 19 build) (2026-10-20)
+  V1-T42 DONE        TASK 18: heartbeat, watchdog, re-auth / token refresh, reconnect gating (2026-10-20)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -838,7 +841,7 @@ Non-goals: log shipping, ELK.
 
 ---
 
-V1-T06  Reconnect & session resilience
+V1-T06  Reconnect & session resilience   [DONE via V1-T42, 2026-10-20]
 --------------------------------------
 Goal:
   Survive transient disconnect / VPN blip without full process restart.
@@ -1782,6 +1785,43 @@ log line, tools/replay.py.
 Verified: Strategy_8 + ProfitTrail per-bar output on 200 replayed bars is
 identical to the cSanOpenAPI (Oct 19) tree; app defaults structure / {8}.
 
+TASK V1-T42:  [DONE 2026-10-20]  Connection health (TASKS.txt TASK 18)
+
+Before: SDK heartbeat only after 20 s idle; any ProtoOAErrorRes before ready
+stopped the reactor (also during a reconnect); no watchdog (a slept host
+kept a dead socket until TCP noticed); no token refresh; requests sent while
+disconnected were queued onto the next, unauthenticated session; error
+replies resolved as success (a failed reconcile emptied the position book);
+a reconnect mid-init could interleave two init chains.
+Delivered (csys/ctrader_api/client.py, config.py, execution.py; capp/ctraderapp.py):
+  client: _build_session chain per connect (app auth → refresh if due →
+  account auth, refresh + retry once on CH_ACCESS_TOKEN_INVALID /
+  OA_AUTH_TOKEN_EXPIRED); stale results of a dropped connection ignored;
+  heartbeat LoopingCall 10 s; watchdog 5 s (probe at 20 s silence, abort at
+  40 s or on a > 30 s wall-clock jump); TCP keepalive (idle 30 / intvl 10 /
+  cnt 3); ClientService backoff 1 → 30 s; send() → NotReadyError unless
+  ready; ProtoOAErrorRes → ApiError; ProtoOAAccountsTokenInvalidatedEvent →
+  refresh + rebuild; ProtoOAAccountDisconnectEvent → rebuild; fatal only
+  for bad credentials on first connect or 5 failed builds in a row
+  (api.fatal → main.py exit 1). All events → on_status → trade log.
+  config: in-session refresh (ProtoOARefreshTokenReq, no redirect URI)
+  persisted to .ctrader_tokens.json (0600), overlaid on .env unless .env's
+  access token changed since.
+  app: on_init runs on every session with a session number; callbacks of a
+  replaced session are ignored; trading (_hist_ready) off on disconnect and
+  on only after reconcile (3 tries, 5 s apart, else reconnect); spot / symbol
+  / live-trendbar subscribe failures → reconnect; ProfitTrail.observe gets
+  bars missed during the outage. Executor skips orders while not ready.
+  deploy/ctrader-bot.service: systemd user unit, Restart=always, wrapped in
+  systemd-inhibit (no host sleep).
+Verified: fake-SDK tests (25 checks: gate, rebuild, token refresh + store,
+fatal rules, stale results, watchdog probe / dead / sleep, heartbeat,
+refresh joiners, expiry, invalidation) and fake-API app tests (init order,
+trading gate, stale session, reconcile retry / exhaustion, trail observe);
+live demo (read-only): auth chain, 10 s heartbeats, 50 s idle without a
+false drop, request after idle, clean logout.
+Not done: container image for cloud hosting (long-term, per TASK 18).
+
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
 ================================================================================
@@ -1793,7 +1833,7 @@ identical to the cSanOpenAPI (Oct 19) tree; app defaults structure / {8}.
   V1-T03   A       PARTIAL     Message / symbolId hardening (spot gate done)
   V1-T04   A       PENDING     Volume / lot constraints
   V1-T05   A       PENDING     Structured logging
-  V1-T06   A       PENDING     Reconnect & session resilience
+  V1-T06   A       DONE        Reconnect & session resilience (via V1-T42)
   V1-T07   A       PENDING     Pure-function unit tests
   V1-T08   A       PENDING     Integration harness (demo)
   V1-T09   B       PENDING     Port true MicroWaveSIG
@@ -1834,6 +1874,8 @@ identical to the cSanOpenAPI (Oct 19) tree; app defaults structure / {8}.
   V1-T40   B       DONE        S8 peaks-only default, trail opt-in, structure
                                shadow (peak_trough_sig_alt), tools/replay.py
   V1-T41   B       DONE        S8 defaults reverted to structure + trail
+  V1-T42   A       DONE        Connection health: heartbeat, watchdog,
+                               session rebuild + token refresh, trading gate
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
