@@ -1,0 +1,27 @@
+# docker compose for the bot (V1-T43). From claudeApp_v1/:
+#   mkdir -p data/logs data/state && chmod 700 data/state
+#   BOT_UID=$(id -u) docker compose up -d --build
+#   docker compose logs -f
+# Secrets come from ./.env on the host (never baked into the image).
+
+services:
+  bot:
+    build:
+      context: .
+      args:
+        BOT_UID: ${BOT_UID:-10001}
+    image: ctrader-bot:latest
+    container_name: ctrader-bot
+    env_file: ./.env                 # CTRADER_* credentials (+ CTRADER_DRY_RUN etc.)
+    # command: ["--dry-run"]         # uncomment for a simulated-orders run
+    volumes:
+      - ./data/logs:/app/logs
+      - ./data/state:/app/state
+    restart: unless-stopped          # crash / fatal exit → restart
+    init: true                       # tini as PID 1: signal forwarding, zombie reaping
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

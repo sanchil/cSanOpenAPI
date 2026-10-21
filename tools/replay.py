@@ -29,7 +29,8 @@ by the spread; costs are applied per trade instead (--spread pips +
 matches live's reseed (the reloaded history has the same hole). Positions
 are held through gaps, as live does.
 
-Variants: S8 peaks / S8 peaks+trail / S8 structure / S8 structure+trail / S7 / S6.
+Variants: S8 swing / S8 swing+trail (V1-T44 default: swing, no trail) /
+S8 peaks / S8 peaks+trail / S8 structure / S8 structure+trail / S7 / S6.
 """
 
 from __future__ import annotations
@@ -176,6 +177,8 @@ class Variant:
 
 def default_variants() -> List[Variant]:
     return [
+        Variant("S8 swing", "swing", 8, False),
+        Variant("S8 swing+trail", "swing", 8, True),
         Variant("S8 peaks", "peaks", 8, False),
         Variant("S8 peaks+trail", "peaks", 8, True),
         Variant("S8 structure", "structure", 8, False),
@@ -204,7 +207,7 @@ def _make_ind(capacity: int, pip: float, digits: int, symbol_id: int) -> IndData
 def replay(bars: List[dict], *, pip: float, digits: int, symbol_id: int, warm: int,
            usd_per_pip: float) -> List[Variant]:
     variants = default_variants()
-    signals = {m: SanSignals(default_shift=1, pt_mode=m) for m in ("peaks", "structure")}
+    signals = {m: SanSignals(default_shift=1, pt_mode=m) for m in ("swing", "peaks", "structure")}
     strategies = {m: CStrategies(s, active=8) for m, s in signals.items()}
     ind = _make_ind(warm, pip, digits, symbol_id)
     ind.load_bars(bars[:warm])

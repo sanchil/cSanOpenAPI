@@ -65,8 +65,8 @@ class CTraderApp:
         trading_enabled: bool = True,
         dry_run: bool = False,
         trade_log: Optional[TradeLogConfig] = None,
-        pt_mode: str = "structure",
-        profit_trail: bool = True,
+        pt_mode: str = "swing",
+        profit_trail: bool = False,
     ):
         self.api = CTraderOpenAPI(config)
         self.api.on_ready = self.on_init
@@ -74,6 +74,11 @@ class CTraderApp:
         self.api.on_disconnected = self._on_disconnected
         # V1-T42: connect / auth / watchdog / token events → console + trade log
         self.api.on_status = self._note
+        # V1-T43: trading state + last bar in the container health file
+        self.api.health_extra = lambda: {
+            "trading": bool(self._hist_ready),
+            "last_bar_min": max(self._last_live_bar_minutes.values(), default=None),
+        }
 
         # Per-symbol historical data: Dict[symbol_id, IndData]
         self.hist_bars: Dict[int, IndData] = {}
@@ -108,14 +113,14 @@ class CTraderApp:
         self._pre_reseed_last_time: Dict[int, datetime] = {}
 
         # design.txt: signals → strategies (once per cycle)
-        # peak_trough_sig mode for Strategy_8 (V1-T41: "structure" default again)
+        # peak_trough_sig mode for Strategy_8 (V1-T44: "swing" = v2 default)
         self.signals = SanSignals(default_shift=1, pt_mode=pt_mode)
         self.strategies = CStrategies(self.signals, active=active_strategy)
         self.last_t_sig: Dict[int, T_SIG] = {}
         self.last_trade_sig: Dict[int, SIG] = {}
         self.last_total_trade_profits: float = 0.0
         # V1-T38: ATR trailing profit lock over these strategies' output
-        # (on by default again since V1-T41; profit_trail=False opts out)
+        # (off by default since V1-T44: it cut swing trends short; opt in)
         self.profit_trail = ProfitTrail()
         self.trail_strategies = {8} if profit_trail else set()
 

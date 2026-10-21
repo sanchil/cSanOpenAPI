@@ -11,6 +11,9 @@ state for kinetic_acceleration_sig_v1 hysteresis; MQ4 SanSignals is stateless.
 Not MQ4 (V1-T29/T31): peak_trough_sig — market structure from find_extrema
 peaks and troughs weighted equally (score = peak trend + trough trend), with
 a close-beyond-zone break override; computed in init_sig, read by Strategy_8.
+Not MQ4 (V1-T44): pt_mode="swing" (default) — peak_trough_sig v2, a per-symbol
+stateful swing-structure regime (capp.signals.swing.SwingStructure, ATR
+zigzag + break of structure), fed each closed bar once.
 Not MQ4 (V1-T32): kinetic_acceleration_sig_v2 — stateless, compares the
 5-bar tail slope with the 16 bars before it, on ima{kin_v2_period} (default
 120, faster than MQ4's ima240); read by Strategy_9.
@@ -35,6 +38,7 @@ from csys.ctypes import DTYPE, IndData, SIG, T_SIG
 from capp.physics import find_extrema
 
 from .stats import mql_at, resolve_pip, slope_distribution, slope_val
+from .swing import SwingStructure
 
 # MQ4 SS::update slope windows (fast, wide) for baseSlope / slope30
 SLOPE_DENOM = 5
@@ -77,7 +81,7 @@ SD_TAIL = 2.6              # both tail ratios above this → NOTRADE (whipsaw)
 PT_ORDER = 5               # find_extrema order (distinct values each side)
 PT_LOOKBACK = 240          # closed bars scanned for extrema
 PT_ZONE_ATR = 0.5          # peaks within this many ATRs are the same zone
-PT_MODES = ("peaks", "structure")
+PT_MODES = ("peaks", "structure", "swing")   # "swing" = v2 (V1-T44), stateful
 
 
 class SanSignals:
@@ -88,7 +92,7 @@ class SanSignals:
         default_shift: int = 1,
         *,
         kin_v1_mode: str = "acc",
-        pt_mode: str = "structure",
+        pt_mode: str = "swing",
         kin_v2_period: int = KIN_V2_PERIOD,
     ) -> None:
         # MQL SHIFT for closed-bar analysis (1 = previous bar if [0] is forming)
@@ -104,14 +108,18 @@ class SanSignals:
         self.kin_v2_period = int(kin_v2_period)
         # kinetic_acceleration_sig_v1 flat regime per (symbol_id, series label)
         self._kin_v1_flat: Dict[Tuple[int, str], bool] = {}
+        # peak_trough_sig v2 (pt_mode="swing") swing structure per symbol_id
+        self._swing: Dict[int, SwingStructure] = {}
 
     def reset_state(self, symbol_id: Optional[int] = None) -> None:
-        """Forget v1 flat-regime state (one symbol, or all)."""
+        """Forget v1 flat-regime and swing-structure state (one symbol, or all)."""
         if symbol_id is None:
             self._kin_v1_flat.clear()
+            self._swing.clear()
         else:
             for key in [k for k in self._kin_v1_flat if k[0] == int(symbol_id)]:
                 del self._kin_v1_flat[key]
+            self._swing.pop(int(symbol_id), None)
 
     # ------------------------------------------------------------------ primitives
     @staticmethod
@@ -450,8 +458,8 @@ class SanSignals:
         without waiting ``order`` bars for it to confirm. Example: HH+HL then
         a close under the last trough → score 0 → SIDEWAYS.
         """
-        if mode not in PT_MODES:
-            raise ValueError(f"mode must be one of {PT_MODES}")
+        if mode not in PT_MODES or mode == "swing":
+            raise ValueError('mode must be "peaks" or "structure" ("swing" is stateful: init_sig)')
         # Raw prices: find_extrema's pip output is relative to series[0],
         # which differs between highs and lows; compare in price units.
         z = zone * pip_size if pip_size else zone
@@ -590,7 +598,7 @@ class SanSignals:
 
         # --- peak/trough structure (V1-T29): closed bars, ATR-sized zone ---
         t.peak_trough_sig = self._peak_trough(ind, sh, atr_pips, resolve_pip(pip, point))
-        alt = "structure" if self.pt_mode == "peaks" else "peaks"
+        alt = "structure" if self.pt_mode == "swing" else "swing"
         t.peak_trough_sig_alt = self._peak_trough(
             ind, sh, atr_pips, resolve_pip(pip, point), mode=alt
         )
@@ -645,8 +653,10 @@ class SanSignals:
         self, ind: IndData, shift: int, atr_pips: float, pip: float, mode: Optional[str] = None
     ) -> SIG:
         """peak_trough_sig on the last PT_LOOKBACK closed bars of high/low
-        (``mode`` defaults to self.pt_mode)."""
+        (``mode`` defaults to self.pt_mode; "swing" → _swing_regime)."""
         mode = mode or self.pt_mode
+        if mode == "swing":
+            return self._swing_regime(ind, shift)
         if atr_pips != atr_pips or atr_pips <= 0.0:
             return SIG.NOSIG
         n = len(ind.high)
@@ -661,6 +671,42 @@ class SanSignals:
             highs, lows, zone=PT_ZONE_ATR * atr_pips, pip_size=pip, mode=mode,
             close=close,
         )
+
+    def _swing_regime(self, ind: IndData, shift: int) -> SIG:
+        """peak_trough_sig v2: feed this symbol's SwingStructure the closed
+        bars it has not seen (matched on bar time) and return its regime.
+        Rebuilt from the whole series on first use, or when the last fed bar
+        is no longer in it (restart, gap longer than the history)."""
+        n = len(ind.high)
+        end = n - max(shift, 0)
+        if end <= 0 or len(ind.low) != n or len(ind.close) != n:
+            return SIG.NOSIG
+        times = list(ind.time) if len(ind.time) == n else None
+        sid = int(getattr(ind, "symbol_id", 0) or 0)
+        ss = self._swing.get(sid)
+        start = 0
+        if ss is not None and times is not None and ss.last_time is not None:
+            j = end
+            while j > 0 and times[j - 1] > ss.last_time:
+                j -= 1
+            if j > 0 and times[j - 1] == ss.last_time:
+                start = j
+            else:
+                ss = None
+        else:
+            ss = None
+        if ss is None:
+            ss = self._swing[sid] = SwingStructure()
+        if start < end:
+            atrs = list(ind.atr)
+            off = len(atrs) - n
+            highs = list(islice(ind.high, start, end))
+            lows = list(islice(ind.low, start, end))
+            closes = list(islice(ind.close, start, end))
+            for k, i in enumerate(range(start, end)):
+                a = atrs[i + off] if 0 <= i + off < len(atrs) else float("nan")
+                ss.update(highs[k], lows[k], closes[k], a, times[i] if times else None)
+        return ss.regime
 
     @staticmethod
     def _micro_wave_proxy(t: T_SIG) -> SIG:

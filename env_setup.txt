@@ -34,3 +34,100 @@ CTRADER_ACCOUNT_ID=48390366
 user: {"data":{"userId":9066191,"nickname":null,"email":null}}
 
 account: {"data":[{"accountId":48390366,"accountNumber":10646472,"live":false,"brokerName":"FxPro","brokerTitle":"FxPro","depositCurrency":"USD","traderRegistrationTimestamp":1787293887736,"traderAccountType":"HEDGED","leverage":10000,"leverageInCents":1000000,"balance":2100000,"deleted":false,"accountStatus":"ACTIVE","swapFree":false,"moneyDigits":2,"brokerAccountDisplayName":null},{"accountId":48390643,"accountNumber":10646473,"live":false,"brokerName":"FxPro","brokerTitle":"FxPro","depositCurrency":"USD","traderRegistrationTimestamp":1787295714362,"traderAccountType":"HEDGED","leverage":10000,"leverageInCents":1000000,"balance":1000000,"deleted":false,"accountStatus":"ACTIVE","swapFree":false,"moneyDigits":2,"brokerAccountDisplayName":null}]}
+
+################################################################################
+# Docker (V1-T43, TASKS.txt TASK 20)
+################################################################################
+#
+# Files (all in claudeApp_v1/):
+#   Dockerfile                      deps layer (python:3.12-slim + pinned libs) → app layer
+#   deploy/requirements.docker.txt  pinned deps (tested versions; protobuf MUST stay 3.20.1)
+#   compose.yaml                    one-command run with volumes, restart, log rotation
+#   .dockerignore                   keeps .env, tokens, logs, this file out of the build
+#   deploy/healthcheck.py           container HEALTHCHECK (reads /app/state/health.json)
+#
+# !! Never put credentials in this file or in the image. Keep them only in
+#    claudeApp_v1/.env (chmod 600). The image contains code only.
+
+## 1. Local folders mapped into the container
+
+#   host (claudeApp_v1/)        container       contents
+#   data/logs/            →     /app/logs       trade_<day>.log, trades_<day>.csv, ml/
+#   data/state/           →     /app/state      .ctrader_tokens.json (refreshed OAuth
+#                                               tokens — keep!), health.json
+#   .env (env file)       →     process env     CTRADER_* credentials, CTRADER_DRY_RUN, ...
+
+cd claudeApp_v1
+mkdir -p data/logs data/state
+chmod 700 data/state            # token store lives here
+chmod 600 .env
+# The container runs as uid BOT_UID (default 10001). Build with your own uid so
+# the bind-mounted folders are writable without sudo:  --build-arg BOT_UID=$(id -u)
+# (or: sudo chown -R 10001:10001 data/)
+
+## 2a. Run with docker compose (recommended)
+
+BOT_UID=$(id -u) docker compose up -d --build     # build + start in background
+docker compose logs -f                            # console output (also in data/logs/)
+docker compose ps                                 # STATUS shows (healthy)/(unhealthy)
+docker compose down                               # stop (SIGTERM → clean shutdown)
+docker compose up -d --build                      # redeploy after a code change
+
+# First run in dry-run: add CTRADER_DRY_RUN=1 to .env (or uncomment
+# `command: ["--dry-run"]` in compose.yaml), check logs, then remove it.
+# Other options via .env: CTRADER_LOG_LEVEL, CTRADER_ML_CAPTURE=1,
+# CTRADER_PT_MODE=structure|peaks (default swing), CTRADER_PROFIT_TRAIL=1
+# (default off), CTRADER_HOST=live.
+
+## 2b. Run with plain docker
+
+docker build --build-arg BOT_UID=$(id -u) -t ctrader-bot .
+docker run -d --name ctrader-bot \
+  --env-file .env \
+  -v "$PWD/data/logs:/app/logs" \
+  -v "$PWD/data/state:/app/state" \
+  --restart unless-stopped --init \
+  --log-opt max-size=10m --log-opt max-file=5 \
+  ctrader-bot                          # append args: ctrader-bot --dry-run --log-level debug
+docker logs -f ctrader-bot
+docker stop ctrader-bot && docker rm ctrader-bot
+
+## 3. Health
+
+docker inspect --format '{{.State.Health.Status}}' ctrader-bot
+docker inspect --format '{{range .State.Health.Log}}{{.Output}}{{end}}' ctrader-bot
+cat data/state/health.json
+# Unhealthy = health file > 60 s old (event loop stuck), fatal auth error, or
+# disconnected > 5 min. Short drops are healed in-app (heartbeat / watchdog /
+# reconnect, V1-T42); a fatal auth error exits 1 and `restart` brings it back.
+# Plain docker does NOT restart an "unhealthy" container by itself — add an
+# external monitor (see VPS notes) if you want that.
+
+## 4. Things to note on a cloud VPS
+
+# - ONE instance per account. Two bots with the same label (cSanOpenAPI) on the
+#   same account will both trade. Stop the laptop bot before starting the VPS.
+# - Size: 1 vCPU / 1 GB RAM is plenty (image ≈ 540 MB, process < 300 MB).
+#   Add a small swap file on 512 MB boxes.
+# - Region: pick one near the broker's servers (cTrader/FxPro: London / EU)
+#   for lower latency; the Open API endpoint is demo|live.ctraderapi.com:5035.
+# - Network: outbound only (TCP 5035 to the API, 443 for image pulls). No
+#   inbound ports are needed — keep the firewall closed except SSH (ufw allow
+#   OpenSSH; ufw enable). SSH keys only, no password login.
+# - Time: keep NTP on (timedatectl set-ntp true / chrony). The container runs in
+#   UTC; logs and bar times are UTC.
+# - Secrets: copy .env over SSH (scp .env vps:~/claudeApp_v1/), chmod 600;
+#   never commit it. Keep data/state/ — it holds the refreshed tokens; if lost,
+#   the bot falls back to the .env tokens (which may have been rotated by a
+#   refresh → then paste fresh tokens into .env).
+# - Docker on boot: sudo systemctl enable docker; `restart: unless-stopped`
+#   brings the bot back after a reboot.
+# - Updates: unattended-upgrades for the OS; redeploy the bot with
+#   `git pull && docker compose up -d --build` (or copy the code over).
+# - Disk: logs rotate per day in data/logs (not pruned) and docker logs are
+#   capped (10 MB × 5). Prune old trade logs / `docker image prune` now and then.
+# - Monitoring: optional `willfarrell/autoheal` container to restart unhealthy
+#   containers, or an uptime check / alert on `docker compose ps` health.
+# - Backups: data/state/ (tokens) and data/logs/ (performance history).
+# - No host sleep on a VPS, so deploy/ctrader-bot.service / systemd-inhibit
+#   are only for running on the laptop.

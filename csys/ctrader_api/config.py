@@ -4,7 +4,8 @@ Token store (V1-T42): after an in-session token refresh the new access /
 refresh pair is written to ``.ctrader_tokens.json`` next to ``.env`` (mode
 0600) and overlays the .env values on the next load. The store remembers
 which .env access token it was derived from; if .env holds a different
-token (the user pasted a new one), the store is ignored.
+token (the user pasted a new one), the store is ignored. CTRADER_TOKEN_STORE
+overrides the path (the container keeps it on a volume, V1-T43).
 """
 
 from __future__ import annotations
@@ -107,7 +108,7 @@ def load_config(env_path: str | Path | None = None) -> CTraderConfig:
     access_token = env_access_token = _require("CTRADER_ACCESS_TOKEN")
     refresh_token = os.getenv("CTRADER_REFRESH_TOKEN")
     expires_at = None
-    store_path = env_path.parent / TOKEN_STORE_NAME
+    store_path = Path(os.getenv("CTRADER_TOKEN_STORE") or env_path.parent / TOKEN_STORE_NAME)
     stored = load_token_store(store_path, access_token)
     if stored is not None:
         access_token = stored["access_token"]

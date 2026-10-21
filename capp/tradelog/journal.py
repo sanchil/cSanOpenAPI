@@ -40,6 +40,8 @@ STRATEGY_DRIVERS = {
     9: "base_slope_sig_v2",
 }
 _CAUSE = {SIG.SIDEWAYS: "flat market", SIG.CLOSE: "deceleration / stall"}
+# Per-strategy overrides (Strategy_8 swing: CLOSE = last swing level broken)
+_CAUSE_BY_STRATEGY = {8: {SIG.CLOSE: "structure broken"}}
 
 
 @dataclass
@@ -192,8 +194,9 @@ class TradeJournal:
             return f"Strategy_{active}"
         v = getattr(t_sig, name, SIG.NOSIG)
         txt = f"{name}={v.name}"
-        if cause and v in _CAUSE:
-            txt += f": {_CAUSE[v]}"
+        causes = {**_CAUSE, **_CAUSE_BY_STRATEGY.get(active, {})}
+        if cause and v in causes:
+            txt += f": {causes[v]}"
         return txt
 
     def _advance(self, symbol_id: int, high: float, low: float) -> None:

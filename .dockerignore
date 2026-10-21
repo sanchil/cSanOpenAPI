@@ -1,0 +1,16 @@
+# Build context is claudeApp_v1/. The Dockerfile copies only csys/ capp/
+# tools/ main.py deploy/; this list keeps secrets and bulk out of the context.
+.env
+.env.*
+*.env
+.ctrader_tokens*
+env_setup.txt
+data/
+logs/
+**/__pycache__/
+**/*.pyc
+code_references/
+requirements.txt
+environment.yaml
+*.png
+.git/

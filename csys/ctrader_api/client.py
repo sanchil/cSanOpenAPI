@@ -20,12 +20,19 @@ Connection health (V1-T42, TASKS.txt TASK 18):
     MAX_AUTH_FAILURES in a row. ``fatal`` lets main.py exit non-zero so a
     supervisor (systemd Restart=always) restarts the process.
 Every connect / disconnect / auth / refresh / watchdog event goes to on_status.
+
+Health file (V1-T43): with CTRADER_HEALTH_FILE set, each watchdog tick writes
+a small JSON status (connected / ready / seconds since inbound data / down
+since / fatal, plus ``health_extra()`` from the app) atomically; the
+container HEALTHCHECK (deploy/healthcheck.py) reads it.
 """
 
 from __future__ import annotations
 
 import calendar
 import datetime
+import json
+import os
 import socket
 import time
 from collections.abc import Callable
@@ -185,6 +192,9 @@ class CTraderOpenAPI:
         self.on_error: ErrorCallback | None = None
         self.on_disconnected: Callable[[Any], None] | None = None
         self.on_status: StatusCallback | None = None
+        # App-level health fields merged into the health file (V1-T43)
+        self.health_extra: Callable[[], dict] | None = None
+        self._health_file = os.getenv("CTRADER_HEALTH_FILE") or None
 
         self._client.setConnectedCallback(self._on_connected)
         self._client.setDisconnectedCallback(self._on_disconnected)
@@ -265,6 +275,7 @@ class CTraderOpenAPI:
         """Unrecoverable: stop so a supervisor restarts the process."""
         self.fatal = why
         self._status(f"❌ FATAL: {why} — stopping")
+        self._write_health()
         self.disconnect()
 
     def refresh_access_token(self) -> defer.Deferred:
@@ -815,6 +826,38 @@ class CTraderOpenAPI:
                 self._status(f"⚠️  Heartbeat send failed: {e}")
 
     def _watchdog_tick(self) -> None:
+        try:
+            self._check_connection()
+        finally:
+            self._write_health()
+
+    def _write_health(self) -> None:
+        if not self._health_file:
+            return
+        now = time.time()
+        status = {
+            "ts": now,
+            "connected": bool(self._client.isConnected),
+            "ready": self._ready,
+            "since_rx": round(now - self._last_rx, 1),
+            "down_since": self._down_since,
+            "connects": self._connects,
+            "fatal": self.fatal,
+        }
+        if self.health_extra is not None:
+            try:
+                status.update(self.health_extra())
+            except Exception:  # noqa: BLE001 — health must never break the loop
+                pass
+        try:
+            tmp = f"{self._health_file}.tmp"
+            with open(tmp, "w") as f:
+                json.dump(status, f)
+            os.replace(tmp, self._health_file)
+        except OSError:
+            pass
+
+    def _check_connection(self) -> None:
         now = time.time()
         jump = now - self._last_tick - WATCHDOG_INTERVAL
         self._last_tick = now

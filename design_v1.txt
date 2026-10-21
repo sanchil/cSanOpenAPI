@@ -109,8 +109,10 @@ Out of scope (unless a task explicitly reopens them):
                                         # keep the host awake while live (V1-T40)
       systemctl --user enable --now ctrader-bot
                                         # supervised: deploy/ctrader-bot.service (V1-T42)
-      python main.py --pt-mode peaks --no-profit-trail
-                                        # Strategy_8 opt-outs (default: structure + trail)
+      BOT_UID=$(id -u) docker compose up -d --build
+                                        # container (V1-T43; full steps in env_setup.txt)
+      python main.py --pt-mode structure --profit-trail
+                                        # Strategy_8 opt-outs (default: swing, no trail; V1-T44)
     Dry-run: signals computed and logged, orders simulated ([EXEC] … (dry_run)),
     startup reconcile skipped (local book starts empty), PnL avg forced to 0.
 
@@ -268,8 +270,9 @@ Out of scope (unless a task explicitly reopens them):
 
   Gates:
     History seed:  execute=False  (indicators+signals only; no orders, no PnL)
-                   NOTE: Strategy_6 sticky state IS updated by the seed cycle
-                   (Strategy_7 / Strategy_8 are stateless).
+                   NOTE: Strategy_6 sticky state IS updated by the seed cycle,
+                   and so is the swing structure behind Strategy_8 (V1-T44,
+                   SanSignals._swing; rebuilt from the seeded bars).
     Live after _hist_ready: execute=True
     dry_run: PnL fetch returns [] (avg 0); executor simulates fills
     enabled=False on OrderExecutor: handle_signal → "skipped"
@@ -367,9 +370,27 @@ Out of scope (unless a task explicitly reopens them):
           min(val2, val3) > 2.6 → NOTRADE (heavy tails both sides: whipsaw)
           Kelly <= -0.25 & median > 0 → BUY; Kelly >= +0.25 & median < 0 → SELL
           else NOSIG (symmetric, or skew vs. median conflict)
-    peak_trough_sig = peak_trough_sig(high, low, zone=0.5·atr_pips,
-        close=close[shift])  (V1-T29, reworked V1-T31; not MQ4; stateless;
-        read by Strategy_8)
+    peak_trough_sig, pt_mode="swing" (DEFAULT, V1-T44; not MQ4; stateful
+        per symbol in SanSignals._swing): capp/signals/swing.SwingStructure
+        fed each closed bar once (matched on bar time; rebuilt from the
+        series on first use / when the last fed bar left it).
+          slow ATR = mean ATR(21) over the last 720 closed bars
+          zigzag on high / low: a leg is confirmed when price retraces
+            8 × slow ATR from its extreme → last two peaks / troughs
+          on each close (zone z = 0.5 × slow ATR):
+            close > last peak + z   → BUY if troughs not lower (HH+HL,
+                                       flat troughs / U-bottom breakout),
+                                       else a SELL regime → CLOSE
+            close < last trough − z → SELL if peaks not higher, else a
+                                       BUY regime → CLOSE
+          regime persists between breaks (no SIDEWAYS exit); warm-up NOSIG
+        Replay (USDJPY M1, costs 0.3p + 0.70 USD): Aug 5 – Oct 5 104 trades
+        +843p net, Oct 5–21 31 trades +67p; S8 structure + trail Oct 7–21
+        686 trades −705 USD vs swing 28 trades +46 USD.
+    peak_trough_sig, pt_mode="structure" / "peaks" = peak_trough_sig(high,
+        low, zone=0.5·atr_pips, close=close[shift])  (V1-T29, reworked
+        V1-T31; not MQ4; stateless; selectable; "structure" is the
+        peak_trough_sig_alt shadow when pt_mode="swing")
         find_extrema(order=5) on raw prices of the last 240 closed bars
         (shift excludes the forming bar); peaks on high, troughs on low.
         Each side: last two extrema, |diff| <= zone → 0, else ±1.
@@ -440,11 +461,10 @@ Out of scope (unless a task explicitly reopens them):
               Drops Strategy_6's fast==HOLD close branch. Threshold:
               CStrategies(decel_profit_close_threshold=2.0).
   Strategy_8  **LIVE DEFAULT** (V1-T30, not MQ4) — market structure on
-              peak_trough_sig (pt_mode="structure" + ProfitTrail, the Oct 19
-              build, restored by V1-T41; "peaks" / no trail are opt-outs),
-              stateless, no PnL gate:
-                pt SIDEWAYS (flat / conflicting structure) → CLOSE (always)
-                pt BUY / SELL (peaks + troughs score)      → that side
+              peak_trough_sig (pt_mode="swing", no ProfitTrail since V1-T44;
+              "structure" / "peaks" / trail are opt-ins), no PnL gate:
+                pt CLOSE (swing: trend broken) or SIDEWAYS → CLOSE (always)
+                pt BUY / SELL (swing regime / score)       → that side
                 otherwise                                  → NOSIG (hold)
               Opposite side closes via the executor; re-entry next bar.
   Strategy_9  (V1-T32, not MQ4) — kinetic v2 on base_slope_sig_v2,
@@ -645,6 +665,8 @@ Out of scope (unless a task explicitly reopens them):
   V1-T40 DONE        TASK 16: S8 back to peaks-only, trail opt-in, tools/replay.py (2026-10-20)
   V1-T41 DONE        TASK 17: S8 defaults back to structure + trail (Oct 19 build) (2026-10-20)
   V1-T42 DONE        TASK 18: heartbeat, watchdog, re-auth / token refresh, reconnect gating (2026-10-20)
+  V1-T43 DONE        TASK 20: Dockerfile, compose, healthcheck, env_setup.txt Docker / VPS notes (2026-10-20)
+  V1-T44 DONE        TASK 21: peak_trough_sig v2 (swing structure) in Strategy_8, trail off (2026-10-22)
 
 Notes on T11 residual (resolved 2026-10-12):
   The design.txt crash "TypeError: unhashable type 'RepeatedScalarFieldContainer'"
@@ -1820,7 +1842,67 @@ refresh joiners, expiry, invalidation) and fake-API app tests (init order,
 trading gate, stale session, reconcile retry / exhaustion, trail observe);
 live demo (read-only): auth chain, 10 s heartbeats, 50 s idle without a
 false drop, request after idle, clean logout.
-Not done: container image for cloud hosting (long-term, per TASK 18).
+Container image: V1-T43.
+
+TASK V1-T43:  [DONE 2026-10-20]  Container (TASKS.txt TASK 19 design, TASK 20)
+
+Delivered: Dockerfile (python:3.12-slim deps layer from
+deploy/requirements.docker.txt, pinned to the tested env: protobuf 3.20.1,
+Twisted 24.3.0, numpy 2.5.2, scipy 1.18.1, ...; app layer copies only
+csys/ capp/ tools/ main.py deploy/healthcheck.py; non-root uid BOT_UID;
+ENTRYPOINT python main.py, args appended), .dockerignore (no .env, tokens,
+env_setup.txt, logs), compose.yaml (env_file .env, volumes data/logs →
+/app/logs and data/state → /app/state, restart unless-stopped, init, log
+rotation), HEALTHCHECK = deploy/healthcheck.py on CTRADER_HEALTH_FILE
+(client writes it every watchdog tick: connected / ready / since_rx /
+down_since / fatal + app trading / last_bar_min). Unhealthy: file > 60 s
+old, fatal, or disconnected > 5 min. CTRADER_TOKEN_STORE moves the token
+store onto the state volume. env_setup.txt: folders, compose / docker run,
+health, VPS notes (one instance per account, outbound-only firewall, NTP,
+secrets, backups, autoheal).
+Verified: image builds (≈540 MB); runs as non-root; no .env / tokens /
+env_setup.txt in the image; imports with pinned versions; read-only demo
+connection inside the container (TLS, auth, heartbeat, request); health
+file written to the host volume; healthcheck healthy / stale / fatal /
+long-down cases. main.py itself not run in the container (live account).
+Note: _requirements.txt pins drift from the tested env (Twisted 26.4.0,
+scipy 1.17.1, no protobuf pin) — the image uses deploy/requirements.docker.txt.
+
+TASK V1-T44:  [DONE 2026-10-22]  peak_trough_sig v2 — swing structure (TASKS.txt TASK 21)
+
+Review (Oct 21 log + trades CSV + ctrader_5.png, chart in UTC-5): 7 real
+trades, 29 % win, −15.46 USD. The bot was asleep through the 22:00–23:06
+(UTC-5) slide holding a BUY (−16.9p), then churned 1–26-bar trades in the
+sideways zigzag; the host slept again before the 03:16–07:26 decline and
+the 08:16 rally. Replay of the same bars (S8 structure + trail) shows the
+real cause: ~50 trades/day, find_extrema(order=5) sees 5-bar wiggles, so
+"structure" flips several times an hour and SIDEWAYS → CLOSE fires in
+every pause; ProfitTrail (3 / 2 ATR(21) ≈ 4 / 2.6 pips) exits on ordinary
+pullbacks. Oct 7–21: 686 trades, −705 USD net.
+Delivered: capp/signals/swing.py SwingStructure (incremental ATR zigzag +
+regime, see §signals); SanSignals pt_mode="swing" (default) with per-symbol
+state in _swing, fed closed bars by time, cleared by reset_state;
+peak_trough_sig_alt = "structure" when swing is live (else "swing");
+Strategy_8 maps CLOSE and SIDEWAYS → CLOSE; journal exit cause for S8
+CLOSE = "structure broken"; CTraderApp(pt_mode="swing", profit_trail=False);
+main.py --pt-mode swing|structure|peaks, --profit-trail opt-in (env
+CTRADER_PT_MODE, CTRADER_PROFIT_TRAIL=1); tools/replay.py S8 swing (+trail)
+variants.
+Parameters picked on a plateau, not a point (75 days of M1 bars, fetched
+read-only): swing 7–9 × slow ATR, zone 0–0.5, scale 720–1440 bars all net
+positive Aug 5 – Oct 5. ATR(21) or fixed-pip swing sizes, and swing ≤ 6,
+were not robust. Rejected: entering on a higher-trough confirmation before
+the flat-peak break (−60 % net), pure stop-and-reverse (+30 % trades,
+lower net), ProfitTrail on top (+909 → +56p; 10 / 6 ATR still +368p).
+Verified: production class = prototype (135 trades, +909p net); restart
+from 2000 bars reproduces the continuous regime 778/778 samples; reseed /
+gap rebuild = fresh SanSignals; tools/replay.py Oct 7–21: S8 swing 28
+trades +112.8p gross / +46.49 USD net, Oct 21 SELL 02:15 → 13:15 UTC
++24.6p then BUY 13:16 (open +20p); S8 swing + trail +3.18 USD.
+Caveats: few trades (~2/day) and long holds (avg ≈ 390 bars, MAE ≈ −10p,
+MFE ≈ +28p): exits give back about one swing by design. A restart enters
+the current regime at once (possibly late in a trend). One symbol (USDJPY)
+only; check EURUSD before enabling fxpair 1.
 
 ================================================================================
 10. TASK STATUS BOARD (update as work lands)
@@ -1876,6 +1958,10 @@ Not done: container image for cloud hosting (long-term, per TASK 18).
   V1-T41   B       DONE        S8 defaults reverted to structure + trail
   V1-T42   A       DONE        Connection health: heartbeat, watchdog,
                                session rebuild + token refresh, trading gate
+  V1-T43   A       DONE        Container: Dockerfile, compose.yaml,
+                               HEALTHCHECK via health file, volumes
+  V1-T44   B       DONE        peak_trough_sig v2 swing structure (pt_mode
+                               "swing") live in S8; ProfitTrail off
 
 Legacy design.txt tasks T1–T11: COMPLETE (or LEARNING-only for T5–T6).
 
